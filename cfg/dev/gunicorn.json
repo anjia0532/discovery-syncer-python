@@ -1,0 +1,7 @@
+{
+  "bind": "0.0.0.0:9797",
+  "loglevel": "debug",
+  "preload_app": true,
+  "autorestart": true
+}
+
