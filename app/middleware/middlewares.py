@@ -9,7 +9,7 @@ from starlette.types import ASGIApp
 
 from core.lib import logger
 
-LOGGER = logger.for_middleware('')
+LOGGER = logger.for_middleware(__name__)
 
 
 async def log_request(request, call_next):

@@ -91,7 +91,6 @@ def get_host_ip():
 computer_ip, computer_name = get_host_ip()
 
 
-
 class JsonFormatterJumpAble(JsonFormatter):
     def add_fields(self, log_record, record, message_dict):
         # log_record['jump_click']   = f"""File '{record.__dict__.get('pathname')}', line {record.__dict__.get('lineno')}"""
@@ -105,7 +104,8 @@ class JsonFormatterJumpAble(JsonFormatter):
 
 DING_TALK_TOKEN = '3dd0eexxxxxadab014bd604XXXXXXXXXXXX'  # 钉钉报警机器人
 
-ELASTIC_HOST = '127.0.0.1'
+IS_ADD_ELASTIC_HANDLER = False
+ELASTIC_HOST = 'http://127.0.0.1:9200'
 ELASTIC_PORT = 9200
 
 RUN_ENV = 'test'
@@ -128,21 +128,28 @@ FORMATTER_DICT = {
         "%Y-%m-%d %H:%M:%S"),  # 我认为的最好的模板,推荐
     6: logging.Formatter('%(name)s - %(asctime)-15s - %(filename)s - %(lineno)d - %(levelname)s: %(message)s',
                          "%Y-%m-%d %H:%M:%S"),
-    7: logging.Formatter('%(asctime)s - %(name)s - "%(filename)s:%(lineno)d" - %(levelname)s - %(message)s', "%Y-%m-%d %H:%M:%S"),  # 一个只显示简短文件名和所处行数的日志模板
+    7: logging.Formatter('%(asctime)s - %(name)s - "%(filename)s:%(lineno)d" - %(levelname)s - %(message)s',
+                         "%Y-%m-%d %H:%M:%S"),  # 一个只显示简短文件名和所处行数的日志模板
 
-    8: JsonFormatterJumpAble('%(asctime)s - %(name)s - %(levelname)s - %(message)s - %(filename)s %(lineno)d  %(process)d %(thread)d', "%Y-%m-%d %H:%M:%S.%f",
-                             json_ensure_ascii=False),  # 这个是json日志，方便elk采集分析.
+    8: JsonFormatterJumpAble(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s - %(filename)s %(lineno)d  %(process)d %(thread)d',
+        "%Y-%m-%d %H:%M:%S.%f",
+        json_ensure_ascii=False),  # 这个是json日志，方便elk采集分析.
 
     9: logging.Formatter(
         '[p%(process)d_t%(thread)d] %(asctime)s - %(name)s - "%(pathname)s:%(lineno)d" - %(funcName)s - %(levelname)s - %(message)s',
         "%Y-%m-%d %H:%M:%S"),  # 对5改进，带进程和线程显示的日志模板。
     10: logging.Formatter(
-        '[p%(process)d_t%(thread)d] %(asctime)s - %(name)s - "%(filename)s:%(lineno)d" - %(levelname)s - %(message)s', "%Y-%m-%d %H:%M:%S"),  # 对7改进，带进程和线程显示的日志模板。
+        '[p%(process)d_t%(thread)d] %(asctime)s - %(name)s - "%(filename)s:%(lineno)d" - %(levelname)s - %(message)s',
+        "%Y-%m-%d %H:%M:%S"),  # 对7改进，带进程和线程显示的日志模板。
     11: logging.Formatter(
-        f'({computer_ip},{computer_name})-[p%(process)d_t%(thread)d] %(asctime)s - %(name)s - "%(filename)s:%(lineno)d" - %(funcName)s - %(levelname)s - %(message)s', "%Y-%m-%d %H:%M:%S"),  # 对7改进，带进程和线程显示的日志模板以及ip和主机名。
+        f'({computer_ip},{computer_name})-[p%(process)d_t%(thread)d] %(asctime)s - %(name)s - "%(filename)s:%(lineno)d" - %(funcName)s - %(levelname)s - %(message)s',
+        "%Y-%m-%d %H:%M:%S"),  # 对7改进，带进程和线程显示的日志模板以及ip和主机名。
     12: logging.Formatter(
         f'%(asctime)s-({computer_ip},{computer_name})-[p%(process)d_t%(thread)d] - %(name)s - "%(filename)s:%(lineno)d" - %(funcName)s - %(levelname)s - %(task_id)s - %(message)s',
-        "%Y-%m-%d %H:%M:%S",)   # 这个是带task_id的日子模板,日子可以显示task_id,方便用户窗帘排查某一个任务的所有日志.
+        "%Y-%m-%d %H:%M:%S", )  # 这个是带task_id的日子模板,日子可以显示task_id,方便用户窗帘排查某一个任务的所有日志.
 }
 
 FORMATTER_KIND = 11  # 如果get_logger不指定日志模板，则默认选择第几个模板
+
+NB_LOG_FORMATER_INDEX_FOR_CONSUMER_AND_PUBLISHER = FORMATTER_DICT[12]

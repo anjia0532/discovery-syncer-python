@@ -1,4 +1,3 @@
-import importlib
 import re
 from enum import Enum
 from typing import List, Dict
@@ -83,12 +82,13 @@ class Settings(BaseModel):
     config_path: str = None
 
     def load_config(self):
-        assert len(self.config_path) > 0, "config must be set"
+        assert self.config_path and len(self.config_path) > 0, "config must be set"
         if bool(re.match(r'^https?://', self.config_path)):
             self._config = parse_yaml_raw_as(Config, httpx.get(self.config_path, timeout=10, verify=False).text)
         else:
             self._config = parse_yaml_file_as(Config, self.config_path)
-        importlib.import_module("app.tasks.task_syncer").reload.publish(msg={})
+        from app.tasks.task_syncer import reload
+        reload.publish(msg={})
 
     @property
     def config(self):

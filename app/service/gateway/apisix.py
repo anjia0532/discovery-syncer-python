@@ -4,14 +4,14 @@ from string import Template
 from typing import List
 
 import httpx
-import nb_log
 import yaml
 
 from app.model.syncer_model import Instance
 from app.service import repr_str
 from app.service.gateway.gateway import Gateway
+from core.lib.logger import for_service
 
-logger = nb_log.get_logger(__name__)
+logger = for_service(__name__)
 
 default_apisix_upstream_template = """
 {

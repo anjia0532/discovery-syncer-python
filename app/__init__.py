@@ -1,19 +1,18 @@
 import argparse
 
 from fastapi import FastAPI
-from starlette.routing import Route
 
 from app.model.config import settings as app_settings
 from core import init_core_modules
 # from core.celery.celery import register_celery
 from core.lib import logger
 from core.settings import settings
-from .tasks.task_syncer import reload
 from .consume import register_task
 from .exception import register_exceptions
 from .handler import register_router
 from .middleware import register_middlewares
 from .scheduler.scheduler import register_scheduler
+from .tasks.task_syncer import reload
 
 LOGGER = logger.get('FASTAPI_APP')
 

@@ -1,11 +1,7 @@
 from abc import abstractmethod
 from typing import Tuple, List
 
-import nb_log
-
 from app.model.syncer_model import Instance
-
-logger = nb_log.get_logger(__name__)
 
 
 class Gateway(object):

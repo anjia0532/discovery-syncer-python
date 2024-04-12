@@ -3,6 +3,7 @@ import typing
 
 from funboost import BoosterParams, BrokerEnum
 
+
 class FunboostCommonConfig(BoosterParams):
     # 中间件选型见3.1章节 https://funboost.readthedocs.io/zh/latest/articles/c3.html
     broker_kind: str = BrokerEnum.SQLITE_QUEUE

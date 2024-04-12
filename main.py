@@ -1,7 +1,6 @@
 import nb_log
 import uvicorn
 
-from core import settings
 from core.lib import util
 from core.lib.cfg import get_cmd_opts, load_cfg
 

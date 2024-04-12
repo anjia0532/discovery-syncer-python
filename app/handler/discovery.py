@@ -1,8 +1,6 @@
-import importlib
 import re
 from typing import Annotated
 
-import nb_log
 from fastapi import APIRouter
 from fastapi import Response
 from fastapi.params import Path, Body
@@ -10,10 +8,11 @@ from fastapi.params import Path, Body
 from app.model.syncer_model import Registration, RegistrationType, RegistrationStatus
 from app.service.discovery.discovery import Discovery
 from app.service.gateway.gateway import Gateway
+from core.lib.logger import for_handler
 
 router = APIRouter()
 
-logger = nb_log.get_logger(__name__)
+logger = for_handler(__name__)
 
 
 @router.put("/discovery/{discovery_name}", summary="主动下线上线注册中心的服务",
@@ -26,8 +25,7 @@ def discovery(discovery_name: Annotated[str, Path(title="discovery_name", descri
     @param discovery_name: 注册中心名称
     @return: 结果
     """
-
-    discovery_clients = importlib.import_module("app.model.config").discovery_clients
+    from app.model.config import discovery_clients
     discovery_client: Discovery = discovery_clients.get(discovery_name)
     assert discovery_client, f"没有获取到注册中心实例{discovery_name}"
     discovery_instances, last_time = discovery_client.get_service_all_instances(registration.service_name,
@@ -66,7 +64,7 @@ def gateway_to_file(gateway_name: Annotated[str, Path(title="gateway_name", desc
     @return: 结果
     """
     try:
-        gateway_clients = importlib.import_module("app.model.config").gateway_clients
+        from app.model.config import gateway_clients
         gateway_client: Gateway = gateway_clients.get(gateway_name)
         assert gateway_client, f"没有获取到网关实例{gateway_name}"
         content, file = gateway_client.fetch_admin_api_to_file()
@@ -86,7 +84,7 @@ def migrate_gateway(
     @return:
     """
     try:
-        gateway_clients = importlib.import_module("app.model.config").gateway_clients
+        from app.model.config import gateway_clients
 
         origin_gateway_client: Gateway = gateway_clients.get(origin_gateway_name)
         assert origin_gateway_client, f"没有获取到数据来源网关实例{origin_gateway_name}"

@@ -1,17 +1,16 @@
-import importlib
 from datetime import datetime, timedelta
 
-import nb_log
 from fastapi import APIRouter
 from fastapi import Response
 from starlette.responses import JSONResponse
 
 from app.model.syncer_model import Jobs
 from core.database import db
+from core.lib.logger import for_handler
 
 router = APIRouter()
 
-logger = nb_log.get_logger(__name__)
+logger = for_handler(__name__)
 
 start = datetime.now()
 
@@ -28,7 +27,7 @@ async def index():
 
 @router.get('/-/reload')
 def reload():
-    settings = importlib.import_module("app.model.config").settings
+    from app.model.config import settings
     settings.load_config()
     return Response(content="OK")
 

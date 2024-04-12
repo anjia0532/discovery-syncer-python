@@ -2,12 +2,12 @@ import json
 from typing import List
 
 import httpx
-import nb_log
 
 from app.model.syncer_model import Instance, Registration, Service
 from app.service.discovery.discovery import Discovery
+from core.lib.logger import for_service
 
-logger = nb_log.get_logger(__name__)
+logger = for_service(__name__)
 
 eureka_status = {
     "UP": True,

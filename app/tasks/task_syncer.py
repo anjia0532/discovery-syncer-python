@@ -2,7 +2,6 @@ import functools
 import importlib
 import re
 
-import nb_log
 from apscheduler.triggers.cron import CronTrigger
 from funboost import boost, funboost_aps_scheduler
 from nb_time import NbTime
@@ -12,8 +11,9 @@ from app.service.discovery.discovery import Discovery
 from app.service.gateway.gateway import Gateway
 from app.tasks.common import FunboostCommonConfig
 from core.database import db
+from core.lib.logger import for_task
 
-logger = nb_log.get_logger(__name__)
+logger = for_task(__name__)
 
 """
     创建生产者
@@ -29,7 +29,7 @@ def get_discovery_client(name: str) -> Discovery:
     @param name: 注册中心名称
     @return: 注册中心实例
     """
-    discovery_clients = importlib.import_module("app.model.config").discovery_clients
+    from app.model.config import discovery_clients
     discovery_client = discovery_clients.get(name)
     return discovery_client
 
@@ -40,18 +40,19 @@ def get_gateway_client(name: str) -> Gateway:
     @param name: 网关名称
     @return: 网关实例
     """
-    gateway_clients = importlib.import_module("app.model.config").gateway_clients
+    from app.model.config import gateway_clients
     gateway_client = gateway_clients.get(name)
     return gateway_client
 
 
 def clear_client():
     funboost_aps_scheduler.remove_all_jobs()
+    from app.model.config import discovery_clients, gateway_clients
 
-    importlib.import_module("app.model.config").discovery_clients.clear()
+    discovery_clients.clear()
     get_discovery_client.cache_clear()
 
-    importlib.import_module("app.model.config").gateway_clients.clear()
+    gateway_clients.clear()
     get_gateway_client.cache_clear()
 
     enginex, sqla_helper = db.get_sqla_helper()
@@ -115,10 +116,9 @@ def syncer(target: dict):
 @boost(boost_params=FunboostCommonConfig(queue_name='queue_reload_job', qps=1, ))
 def reload():
     logger.info("load config yaml")
-    settings = importlib.import_module("app.model.config").settings
+    from app.model.config import settings, discovery_clients, gateway_clients
     clear_client()
     # key 为 name，value 为 discovery client
-    discovery_clients = importlib.import_module("app.model.config").discovery_clients
     if settings.config.discovery_servers:
         for name, discovery in settings.config.discovery_servers.items():
             cls = getattr(importlib.import_module(f"app.service.discovery.{discovery.type.value}"),
@@ -126,7 +126,6 @@ def reload():
             client = cls(discovery)
             discovery_clients[name] = client
     # key 为 name，value 为 gateway client
-    gateway_clients = importlib.import_module("app.model.config").gateway_clients
     if settings.config.gateway_servers:
         for name, gateway in settings.config.gateway_servers.items():
             cls = getattr(importlib.import_module(f"app.service.gateway.{gateway.type.value}"),
