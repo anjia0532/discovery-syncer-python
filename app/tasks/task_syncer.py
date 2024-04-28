@@ -1,3 +1,4 @@
+import datetime
 import functools
 import importlib
 import re
@@ -136,11 +137,71 @@ def reload():
     if settings.config.targets:
         for index, target in enumerate(settings.config.targets):
             target.id = f"{index}-{target.gateway}-{target.discovery}"
-            values = target.fetch_interval.split()
-            assert len(values) == 6, f"fetch_interval格式错误{target.fetch_interval}"
+
             if target.enabled:
+                second, minute, hour, day, month, day_of_week, next_run_time = time_parser(target.fetch_interval)
                 Jobs(**target.dict()).save_or_update(sqla_helper)
-                trigger = CronTrigger(second=values[0], minute=values[1], hour=values[2], day=values[3],
-                                      month=values[4], day_of_week=values[5])
-                funboost_aps_scheduler.add_push_job(syncer, id=target.id, name=target.id, trigger=trigger,
-                                                    kwargs={"target": target.model_dump()}, replace_existing=True)
+                if next_run_time:
+                    funboost_aps_scheduler.add_push_job(syncer, id=target.id, name=target.id,
+                                                        next_run_time=next_run_time,
+                                                        kwargs={"target": target.model_dump()}, replace_existing=True)
+                else:
+                    funboost_aps_scheduler.add_push_job(syncer, id=target.id, name=target.id,
+                                                        trigger=CronTrigger(second=second, minute=minute, hour=hour,
+                                                                            day=day, month=month,
+                                                                            day_of_week=day_of_week),
+                                                        kwargs={"target": target.model_dump()}, replace_existing=True)
+
+
+def time_parser(fetch_interval: str = ''):
+    assert len(fetch_interval) > 0, "作业表达式不能为空"
+    """
+    值                     | 描述                                                 | 等效于
+	-----                  | -----------                                         | -------------
+	@yearly (or @annually) | 每年1月1日 午夜零点零分零秒执行一次                     | 0 0 0 1 1 *
+	@monthly               | 每月1日 午夜零点零分零秒执行一次                        | 0 0 0 1 * *
+	@weekly                | 每周日的午夜零点零分零秒执行一次                        | 0 0 0 * * 0
+	@daily (or @midnight)  | 每天的午夜零点零分零秒执行一次                          | 0 0 0 * * *
+	@hourly                | 每小时的零分零秒执行一次                               | 0 0 * * * *
+	@reboot                | 启动时执行一次                                        | -
+	@every                 | 每多久执行一次(仅支持s(秒)/m(分)/h(时),且一次只能用一种)  | */30 * * * * *  
+    """
+    values = fetch_interval.split()
+    next_run_time = None
+    if "@" in fetch_interval:
+        match values[0]:
+            case "@yearly" | "@annually":
+                fetch_interval = "0 0 0 1 1 *"
+            case "@monthly":
+                fetch_interval = "0 0 0 1 * *"
+            case "@weekly":
+                fetch_interval = "0 0 0 * * 0"
+            case "@daily" | "@midnight":
+                fetch_interval = "0 0 0 * * *"
+            case "@hourly":
+                fetch_interval = "0 0 * * * *"
+            case "@reboot":
+                next_run_time = datetime.datetime.now()
+            case "@every":
+                matches = re.findall(r'(\d+)([a-zA-Z]+)', values[1])
+                # 兼容 1h 1hour 1hours 1min 1minute 1minutes 1sec 1second 1seconds
+                times = [(int(num), unit.lower()[0]) for num, unit in matches]
+                assert len(times) == 1, f"fetch_interval格式错误: {fetch_interval}"
+                match times[0][1]:
+                    case "h":
+                        fetch_interval = f"0 0 */{times[0][0]} * * *"
+                    case "m":
+                        fetch_interval = f"0 */{times[0][0]} * * * *"
+                    case "s":
+                        fetch_interval = f"*/{times[0][0]} * * * * *"
+    if next_run_time:
+        return None, None, None, None, None, None, next_run_time
+    else:
+        values = fetch_interval.split()
+        # 秒 分、时、日、月、周几
+        # * * * * * *
+        if len(values) == 5:
+            fetch_interval = f"* {fetch_interval}"
+            values = fetch_interval.split()
+        assert len(values) == 6, f"fetch_interval格式错误: {fetch_interval}"
+        return values[0], values[1], values[2], values[3], values[4], values[5], None

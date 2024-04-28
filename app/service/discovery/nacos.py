@@ -20,7 +20,7 @@ class Nacos(Discovery):
         # catalog 包含是否启用 /nacos/v1/ns/catalog/services?withInstances=true&pageNo=0&pageSize=10&serviceNameParam=&groupNameParam=&namespaceId=zhongtai
         data = {"pageNo": 0, "pageSize": 1000000, "groupNameParam": "", "namespaceId": "",
                 "withInstances": True, "hasIpCount": True} | config
-        del data["template"]
+        data.pop("template", None)
         resp = self.nacos_execute(uri="ns/catalog/services", params=data)
         logger.info(
             f"拉取 nacos 服务列表,url: {self._config.host}{self._config.prefix}ns/catalog/services, 请求参数: {data}, 响应结果: {resp}")

@@ -6,6 +6,10 @@ import httpx
 from pydantic import BaseModel, Field, model_validator
 from pydantic_yaml import parse_yaml_file_as, parse_yaml_raw_as
 
+from core.lib.logger import for_model
+
+logger = for_model(__name__)
+
 
 class DiscoveryType(Enum):
     NACOS = "nacos"
@@ -54,13 +58,18 @@ class Targets(BaseModel):
     upstream_prefix: str = Field(None, alias="upstream-prefix")
     fetch_interval: str = Field("0 0 * * * *", alias="fetch-interval")
     maximum_interval_sec: int = Field(-1, alias="maximum-interval-sec")
-    config: dict = None
+    config: dict = {}
 
     @model_validator(mode='after')
     def check_targets(self) -> 'Targets':
         assert self.discovery is not None, "discovery 必填，注册中心名称"
         assert self.gateway is not None, "gateway 必填，网关名称"
-        assert len(self.fetch_interval), "fetch-interval 必填，同步间隔，格式为 秒 分 时 日 月 周, 默认为每天零点零分 0 0 * * * *"
+        assert len(self.fetch_interval) > 0, "fetch-interval 必填，同步间隔，格式为 秒 分 时 日 月 周, 默认为每天零点零分 0 0 * * * *"
+        if "\"{{." in self.config.get("template", ""):
+            logger.warning(
+                self.name + "config.template 中存在 {{. }} 变量，请检查是否正确填写，已自动删除该变量，改用系统自带模板，当前值: " + \
+                self.config.get('template'))
+            self.config.pop('template', None)
         return self
 
 

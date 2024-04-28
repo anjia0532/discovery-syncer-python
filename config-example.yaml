@@ -16,7 +16,7 @@ gateway-servers:
         admin-url: http://apisix-server:9080
         prefix: /apisix/admin/
         config:
-            X-API-KEY: edd1c9f034335f136f87ad84b625c8f1
+            X-API-KEY: xxxxxxxx-xxxx-xxxxxxxxxxxx
             version: v3
     kong1:
         type: kong
@@ -29,6 +29,16 @@ targets:
     -   discovery: nacos1
         gateway: apisix1
         enabled: false
+        # 拉取间隔
+        # 支持crontab格式(5位 * * * * * == 分 时 日 月 周 6位 * * * * * * == 秒 分 时 日 月 周)
+        # 特殊值                  | 描述                                                 | 示例
+        # @yearly (or @annually) | 每年1月1日 午夜零点零分零秒执行一次                     | 0 0 0 1 1 *
+        # @monthly               | 每月1日 午夜零点零分零秒执行一次                        | 0 0 0 1 * *
+        # @weekly                | 每周日的午夜零点零分零秒执行一次                        | 0 0 0 * * 0
+        # @daily (or @midnight)  | 每天的午夜零点零分零秒执行一次                          | 0 0 0 * * *
+        # @hourly                | 每小时的零分零秒执行一次                               | 0 0 * * * *
+        # @reboot                | 启动时执行一次                                        | -
+        # @every                 | 每多久执行一次(仅支持s(秒)/m(分)/h(时),且一次只能用一种)  | */30 * * * * *
         fetch-interval: "*/30 * * * * *" # every 30 seconds
         maximum-interval-sec: 20 # now - last > ${maximum-interval-sec}sec is lost
         upstream-prefix: test
