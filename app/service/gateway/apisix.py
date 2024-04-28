@@ -56,21 +56,21 @@ APISIX_V2 = "v2"
 APISIX_V3 = "v3"
 
 apisix_uri_dict = {
-    "routes": {"version": [APISIX_V2, APISIX_V3], "field": "routes"},
-    "services": {"version": [APISIX_V2, APISIX_V3], "field": "services"},
-    "consumers": {"version": [APISIX_V2, APISIX_V3], "field": "consumers"},
-    "upstreams": {"version": [APISIX_V2, APISIX_V3], "field": "upstreams"},
-    "ssl": {"version": [APISIX_V2], "field": "ssl"},
-    "ssls": {"version": [APISIX_V3], "field": "ssls"},
-    "global_rules": {"version": [APISIX_V2, APISIX_V3], "field": "global_rules"},
-    "consumer_groups": {"version": [APISIX_V3], "field": "consumer_groups"},
-    "plugin_configs": {"version": [APISIX_V2, APISIX_V3], "field": "plugin_configs"},
-    "plugin_metadata": {"version": [APISIX_V2, APISIX_V3], "field": "plugin_metadata"},
-    "plugins/list": {"version": [APISIX_V2, APISIX_V3], "field": "plugins"},
-    "stream_routes": {"version": [APISIX_V2, APISIX_V3], "field": "stream_routes"},
-    "secrets": {"version": [APISIX_V3], "field": "secrets"},
-    "protos": {"version": [APISIX_V3], "field": "protos"},
-    "proto": {"version": [APISIX_V2], "field": "proto"},
+    "ssl": {"version": [APISIX_V2], "field": "ssl", "order": 0},
+    "ssls": {"version": [APISIX_V3], "field": "ssls", "order": 0},
+    "proto": {"version": [APISIX_V2], "field": "proto", "order": 0},
+    "protos": {"version": [APISIX_V3], "field": "protos", "order": 0},
+    "secrets": {"version": [APISIX_V3], "field": "secrets", "order": 0},
+    "plugins/list": {"version": [APISIX_V2, APISIX_V3], "field": "plugins", "order": 0},
+    "global_rules": {"version": [APISIX_V2, APISIX_V3], "field": "global_rules", "order": 0},
+    "stream_routes": {"version": [APISIX_V2, APISIX_V3], "field": "stream_routes", "order": 0},
+    "plugin_configs": {"version": [APISIX_V2, APISIX_V3], "field": "plugin_configs", "order": 0},
+    "plugin_metadata": {"version": [APISIX_V2, APISIX_V3], "field": "plugin_metadata", "order": 0},
+    "consumers": {"version": [APISIX_V2, APISIX_V3], "field": "consumers", "order": 1},
+    "services": {"version": [APISIX_V2, APISIX_V3], "field": "services", "order": 2},
+    "upstreams": {"version": [APISIX_V2, APISIX_V3], "field": "upstreams", "order": 2},
+    "consumer_groups": {"version": [APISIX_V3], "field": "consumer_groups", "order": 2},
+    "routes": {"version": [APISIX_V2, APISIX_V3], "field": "routes", "order": 3},
 }
 
 ignore_uris = ["plugins/list"]
@@ -161,6 +161,21 @@ class Apisix(Gateway):
         with open(tempfile.gettempdir() + "\\apisix.yaml", "w") as f:
             f.write(content)
         return content, tempfile.gettempdir() + "\\apisix.yaml"
+
+    async def restore_gateway(self, body: str):
+        data = yaml.safe_load(body)
+        threads = []
+        for uri, item in sorted(apisix_uri_dict.items(), key=lambda x: x[1].get("order")):
+            item_data = data.get(item.get('field'), [])
+            if ignore_uris.__contains__(uri) or self.VERSION not in item.get("version") or len(item_data) == 0:
+                continue
+            logger.info(f"开始恢复 {uri} 数据 {item_data}")
+            for val in item_data:
+                t = Thread(target=self.apisix_execute,
+                           args=("PUT", uri + "/" + val.get("id", val.get("name")), {}, json.dumps(val)))
+                t.start()
+        for t in threads:
+            t.join()
 
     async def migrate_to(self, target_gateway: Gateway):
         assert isinstance(target_gateway, Apisix), "目前仅支持apisix网关之间的迁移"

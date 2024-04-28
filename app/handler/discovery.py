@@ -27,7 +27,8 @@ def discovery(discovery_name: Annotated[str, Path(title="discovery_name", descri
     """
     from app.model.config import discovery_clients
     discovery_client: Discovery = discovery_clients.get(discovery_name)
-    assert discovery_client, f"没有获取到注册中心实例{discovery_name}"
+    if not discovery_client:
+        return Response(status_code=404, content=f"没有获取到注册中心实例{discovery_name}")
     discovery_instances, last_time = discovery_client.get_service_all_instances(registration.service_name,
                                                                                 registration.ext_data,
                                                                                 enabled_only=False)
@@ -66,7 +67,8 @@ def gateway_to_file(gateway_name: Annotated[str, Path(title="gateway_name", desc
     try:
         from app.model.config import gateway_clients
         gateway_client: Gateway = gateway_clients.get(gateway_name)
-        assert gateway_client, f"没有获取到网关实例{gateway_name}"
+        if not gateway_client:
+            return Response(status_code=404, content=f"没有获取到网关实例{gateway_name}")
         content, file = gateway_client.fetch_admin_api_to_file()
         return Response(status_code=200, content=content, headers={"syncer-file-location": f"{file}"})
     except Exception as e:
@@ -87,11 +89,36 @@ async def migrate_gateway(
         from app.model.config import gateway_clients
 
         origin_gateway_client: Gateway = gateway_clients.get(origin_gateway_name)
-        assert origin_gateway_client, f"没有获取到数据来源网关实例{origin_gateway_name}"
+        if not origin_gateway_client:
+            return Response(status_code=404, content=f"没有获取到数据来源网关实例{origin_gateway_name}")
 
         target_gateway_client: Gateway = gateway_clients.get(target_gateway_name)
-        assert target_gateway_client, f"没有获取到数据迁入网关实例{target_gateway_name}"
+        if not target_gateway_client:
+            return Response(status_code=404, content=f"没有获取到数据迁入网关实例{target_gateway_name}")
+
         await origin_gateway_client.migrate_to(target_gateway_client)
+    except Exception as e:
+        return Response(status_code=500, content=f"{e.args[0]}")
+    return Response(status_code=200, content="OK")
+
+
+@router.put("/restore/{target_gateway_name}")
+async def restore_gateway(
+        target_gateway_name: Annotated[str, Path(title="target_gateway_name", description="数据迁入目标网关中心名称")],
+        body: Annotated[str, Body(title="body", description="待还原配置文件数据")]):
+    """
+    通过文件还原网关数据(目前仅支持apisix)
+    @param body: 待还原配置文件数据
+    @param target_gateway_name: 数据迁入目标网关中心名称
+    @return:
+    """
+    try:
+        from app.model.config import gateway_clients
+
+        target_gateway_client: Gateway = gateway_clients.get(target_gateway_name)
+        if not target_gateway_client:
+            return Response(status_code=404, content=f"没有获取到待还原网关实例{target_gateway_name}")
+        await target_gateway_client.restore_gateway(body)
     except Exception as e:
         return Response(status_code=500, content=f"{e.args[0]}")
     return Response(status_code=200, content="OK")

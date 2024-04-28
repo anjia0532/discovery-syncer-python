@@ -33,3 +33,6 @@ class Gateway(object):
         """
         return '-'.join(
             [item for item in [target.get("upstream_prefix", None), upstream_name] if item is not None])
+
+    async def restore_gateway(self, body: str) -> str:
+        pass

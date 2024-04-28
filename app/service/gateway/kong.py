@@ -73,6 +73,9 @@ class Kong(Gateway):
     def migrate_to(self, target_gateway: 'Gateway'):
         raise Exception("Unrealized")
 
+    def restore_gateway(self, body: str) -> str:
+        raise Exception("Unrealized")
+
     def kong_execute(self, method, uri, params, data=None):
         resp = httpx.request(method, f"{self._config.admin_url}{self._config.prefix}{uri}",
                              params=params, data=data, timeout=10,

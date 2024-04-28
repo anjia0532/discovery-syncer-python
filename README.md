@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.1.0
+docker run anjia0532/discovery-syncer-python:v2.2.0
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -17,161 +17,7 @@ docker run anjia0532/discovery-syncer-python:v2.1.0
 
 ### 配置文件
 
-<details>
-<summary>点击查看 config.yaml</summary>
-<pre><code>
-
-```yaml
-# 注册中心,map形式
-discovery-servers:
-  # nacos1 是注册中心的名字，可以随便定义，但是不能重复
-  nacos1:
-    # 类型，目前仅支持 nacos和eureka
-    type: nacos
-    # 默认，如果注册中心没有返回权重时，添加的默认权重
-    weight: 100
-    # 注册中心的url前缀
-    prefix: /nacos/v1/
-    # 注册中心的连接地址，注意最后不能带/
-    host: "http://nacos-server:8858"
-  eureka1:
-    type: eureka
-    weight: 100
-    prefix: /eureka/
-    # 对于basic认证，可以这么写
-    host: "http://admin:admin@eureka-server:8761"
-
-# 网关,map形式
-gateway-servers:
-  # 网关名字，可以随便写，但是不能重复
-  apisix1:
-    # 网关类型，目前支持apisix和kong
-    type: apisix
-    # 管理端host,注意最后不能有/
-    admin-url: http://apisix-server:9080
-    # 管理端uri前缀
-    prefix: /apisix/admin/
-    # 特别的扩展参数，在config里用key:value形式添加
-    config:
-      X-API-KEY: xxxxx
-      # apisix admin api 目前2.15.x 和 3.x 差异较大 详见 https://apisix.apache.org/zh/docs/apisix/next/upgrade-guide-from-2.15.x-to-3.0.0/
-      # 默认是v2，如果是3.x的，请改成v3
-      version: v2
-  kong1:
-    type: kong
-    admin-url: http://kong-server:8001
-    prefix: /upstreams/
-    config:
-      # kong 的 list all targets 接口地址，老版本是 /targets/all，新版本是 /targets，不填默认是 /targets
-      targets_uri: /targets/all
-
-# 同步任务，列表形式
-targets:
-  # 注意同一个注册中心，但是有多个租户（类似nacos的命名空间）时，不需要创建多个相同的注册中心
-  # 只需要创建多个targets，然后改config的扩展参数即可
-  # 第一个任务
-  # 注册中心，来源
-  - discovery: nacos1
-    # 网关，目标
-    gateway: apisix1
-    # 是否启用
-    enabled: false
-    # 拉取间隔
-    # 支持crontab格式(5位 * * * * * == 分 时 日 月 周 6位 * * * * * * == 秒 分 时 日 月 周)
-    # 特殊值                  | 描述                                                 | 示例
-    # @yearly (or @annually) | 每年1月1日 午夜零点零分零秒执行一次                     | 0 0 0 1 1 *
-    # @monthly               | 每月1日 午夜零点零分零秒执行一次                        | 0 0 0 1 * *
-    # @weekly                | 每周日的午夜零点零分零秒执行一次                        | 0 0 0 * * 0
-    # @daily (or @midnight)  | 每天的午夜零点零分零秒执行一次                          | 0 0 0 * * *
-    # @hourly                | 每小时的零分零秒执行一次                               | 0 0 * * * *
-    # @reboot                | 启动时执行一次                                        | -
-    # @every                 | 每多久执行一次(仅支持s(秒)/m(分)/h(时),且一次只能用一种)  | */30 * * * * *  
-    fetch-interval: "*/10 * * * * *"
-    # 默认是把能拉倒的注册中心的服务都拉过来，有些不需要的，则进行排除,支持正则
-    exclude-service: [ 'ex*','test' ]
-    # 同步到网关的upstream的名字的前缀，便于管理
-    upstream-prefix: nacos1
-    # 本次同步唯一key，为空则是discovery-gateway
-    name: nacos1-apisix1
-    # 对于health检查时，超过限定秒数的，认为是失联状态，默认是10秒
-    maximum-interval-sec: 20
-    # 扩展参数
-    config:
-      # nacos 的groupName
-      groupName: DEFAULT_GROUP
-      # nacos的 namespace
-      namespaceId: test
-      # 创建到apisix 的upstream的默认模板，具体支持的模板语法，自行搜索 golang text/template
-      template: |
-        {
-            "id": "$name",
-            "timeout": {
-                "connect": 30,
-                "send": 30,
-                "read": 30
-            },
-            "name": "$name",
-            "nodes": $nodes,
-            "type":"roundrobin",
-            "desc": "auto sync by https://github.com/anjia0532/discovery-syncer-python"
-        }
-
-  - discovery: eureka1
-    gateway: kong1
-    enabled: false
-    fetch-interval: "*/5 * * * * *"
-    maximum-interval-sec: 10
-    config:
-      template: |
-        {
-            "name": "$name",
-            "algorithm": "round-robin",
-            "hash_on": "none",
-            "hash_fallback": "none",
-            "hash_on_cookie_path": "/",
-            "slots": 10000,
-            "healthchecks": {
-                "passive": {
-                    "healthy": {
-                        "http_statuses": [200, 201, 202, 203, 204, 205, 206, 207, 208, 226, 300, 301, 302, 303, 304, 305, 306, 307, 308],
-                        "successes": 0
-                    },
-                    "type": "http",
-                    "unhealthy": {
-                        "http_statuses": [429, 500, 503],
-                        "timeouts": 0,
-                        "http_failures": 0,
-                        "tcp_failures": 0
-                    }
-                },
-                "active": {
-                    "timeout": 1,
-                    "https_sni": "example.com",
-                    "http_path": "/",
-                    "concurrency": 10,
-                    "https_verify_certificate": true,
-                    "type": "http",
-                    "healthy": {
-                        "http_statuses": [200, 302],
-                        "successes": 0,
-                        "interval": 0
-                    },
-                    "unhealthy": {
-                        "http_statuses": [429, 404, 500, 501, 502, 503, 504, 505],
-                        "timeouts": 0,
-                        "http_failures": 0,
-                        "interval": 0,
-                        "tcp_failures": 0
-                    }
-                },
-                "threshold": 0
-            },
-            "tags": ["discovery-syncer-auto"]
-        }
-```
-
-</code></pre>
-</details>
+[点击查看 config.yaml](https://github.com/anjia0532/discovery-syncer-python/blob/master/config-example.yaml)
 
 ### Api接口
 
@@ -184,9 +30,16 @@ targets:
 | `GET /health`                                    | JSON       | 判断服务是否健康，可以配合k8s等容器服务的健康检查使用                           |
 | `PUT /discovery/{discovery-name}`                | `OK`       | 主动下线上线注册中心的服务,配合CI/CD发版业务用                             |
 | `GET /gateway-api-to-file/{gateway-name}`        | text/plain | 读取网关admin api转换成文件用于备份或者db-less模式                      |
-| `POST /migrate/{gateway-name}/to/{gateway-name}` | JSON       | 将网关数据迁移(目前仅支持apisix)                                   |
+| `POST /migrate/{gateway-name}/to/{gateway-name}` | `OK`       | 将网关数据迁移(目前仅支持apisix)                                   |
+| `PUT /restore/{gateway-name}`                    | `OK`       | 将 db-less 文件还原到网关(目前仅支持apisix)                         |
 
-`GET /health` 的返回值
+#### `GET /-/reload` 重新加载配置文件，加载成功返回OK
+
+主要是cicd场景或者k8s的configmap reload 场景使用
+
+#### `GET /health` 判断服务是否健康，可以配合k8s等容器服务的健康检查使用
+
+返回值
 
 ```json
 {
@@ -209,7 +62,9 @@ targets:
 
 ```
 
-`PUT /discovery/{discovery-name}` 中的name是注册中心的名字，如果不存在，则返回 `Not Found` http status code 是404
+#### `PUT /discovery/{discovery-name}` 主动下线上线注册中心的服务,配合CI/CD发版业务用
+
+中的name是注册中心的名字，如果不存在，则返回 `Not Found` http status code 是404
 
 body入参
 
@@ -233,19 +88,63 @@ body入参
 }
 ```
 
-`GET /gateway-api-to-file/{gateway-name}` 中的gateway-name是网关的名字，如果不存在，则返回 `Not Found`，http status code
-是404
+#### `GET /gateway-api-to-file/{gateway-name}?file=/tmp/apisix.yaml` 读取网关admin api转换成文件用于备份或者db-less模式
 
-如果服务报错，resp body 会返回空字符串，header 中的 `syncer-err-msg` 会返回具体原因 http status code 是500
+gateway-name是网关的名字，如果不存在，则返回 `Not Found`，http status code是404
+
+如果服务报错，resp body 会返回空字符串，header 中的 `syncer-err-msg` 会返回具体原因 http status code 是500参数 `file`
+是可选的，如果不传，则默认`/tmp/文件名` 比如 `/tmp/apisix.yaml`，并返回文件路径
 
 如果正常，resp body 会返回转换后的文本内容，`syncer-file-location` 会返回syncer服务端的路径(
-一般是系统临时目录+文件名，例如`/tmp/apisix.yaml`)， http status
-code是200
+一般是系统临时目录+文件名，例如`/tmp/apisix.yaml`)， http status code是200
 
 **注意**
 
-精力有限，目前仅实现了 apisix 的 admin api 转 yaml 功能和 apisix 实例间数据迁移，kong 的未实现，有需要的，欢迎提PR贡献代码或者提
-issues 来反馈
+精力有限，目前仅实现了 apisix 的 admin api 转 yaml，kong 的未实现，有需要的，欢迎提PR贡献代码或者提issues 来反馈
+
+#### `POST /migrate/{origin_gateway_name}/to/{target_gateway_name}` 相同网关不同实例间数据迁移
+
+origin_gateway_name 是源网关的名字，target_gateway_name 是目标网关的名字，如果不存在，则返回 `Not Found` http status code
+是404
+
+**注意**
+
+精力有限，目前仅实现了 apisix 实例间数据迁移 （支持 apisix 2x->3x , apisix 3x->2x，apisix 2x->2x，apisix 3x->3x），kong
+的未实现，有需要的，欢迎提PR贡献代码或者提issues 来反馈
+
+#### `PUT /restore/{gateway-name}` 将 db-less 文件还原到网关
+
+gateway-name 是网关的名字，如果不存在，则返回 `Not Found` http status code 是404
+
+body入参（以apisix为例）
+
+```yaml
+# Auto generate by https://github.com/anjia0532/discovery-syncer-python, Don't Modify
+
+# apisix 2.x modify conf/config.yaml https://apisix.apache.org/docs/apisix/2.15/stand-alone/
+# apisix:
+#  enable_admin: false
+#  config_center: yaml
+
+# apisix 3.x modify conf/config.yaml https://apisix.apache.org/docs/apisix/3.2/deployment-modes/#standalone
+# deployment:
+#  role: data_plane
+#  role_data_plane:
+#    config_provider: yaml
+
+# save as conf/apisix.yaml
+
+routes: [ ]
+services: [ ]
+upstreams: [ ]
+plugins: [ ]
+
+#END
+```
+
+**注意**
+仅限同版本还原，不支持跨版本还原，如apisix 2.x 还原到 apisix 3.x，apisix 3.x 还原到 apisix 2.x。有需要跨版本的
+精力有限，目前仅实现了 apisix 的 yaml 还原 apisix ，kong 的未实现，有需要的，欢迎提PR贡献代码或者提issues 来反馈
 
 ## 待优化点
 
