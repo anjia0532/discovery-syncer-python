@@ -17,8 +17,9 @@ docker run anjia0532/discovery-syncer-python:v2.1.0
 
 ### 配置文件
 
-```yaml
-
+<details>
+<summary>config.yaml</summary>
+<pre><code>
 # 注册中心,map形式
 discovery-servers:
   # nacos1 是注册中心的名字，可以随便定义，但是不能重复
@@ -76,13 +77,13 @@ targets:
     # 拉取间隔
     # 支持crontab格式(5位 * * * * * == 分 时 日 月 周 6位 * * * * * * == 秒 分 时 日 月 周)
     # 特殊值                  | 描述                                                 | 示例
-	# @yearly (or @annually) | 每年1月1日 午夜零点零分零秒执行一次                     | 0 0 0 1 1 *
-	# @monthly               | 每月1日 午夜零点零分零秒执行一次                        | 0 0 0 1 * *
-	# @weekly                | 每周日的午夜零点零分零秒执行一次                        | 0 0 0 * * 0
-	# @daily (or @midnight)  | 每天的午夜零点零分零秒执行一次                          | 0 0 0 * * *
-	# @hourly                | 每小时的零分零秒执行一次                               | 0 0 * * * *
-	# @reboot                | 启动时执行一次                                        | -
-	# @every                 | 每多久执行一次(仅支持s(秒)/m(分)/h(时),且一次只能用一种)  | */30 * * * * *  
+    # @yearly (or @annually) | 每年1月1日 午夜零点零分零秒执行一次                     | 0 0 0 1 1 *
+    # @monthly               | 每月1日 午夜零点零分零秒执行一次                        | 0 0 0 1 * *
+    # @weekly                | 每周日的午夜零点零分零秒执行一次                        | 0 0 0 * * 0
+    # @daily (or @midnight)  | 每天的午夜零点零分零秒执行一次                          | 0 0 0 * * *
+    # @hourly                | 每小时的零分零秒执行一次                               | 0 0 * * * *
+    # @reboot                | 启动时执行一次                                        | -
+    # @every                 | 每多久执行一次(仅支持s(秒)/m(分)/h(时),且一次只能用一种)  | */30 * * * * *  
     fetch-interval: "*/10 * * * * *"
     # 默认是把能拉倒的注册中心的服务都拉过来，有些不需要的，则进行排除,支持正则
     exclude-service: [ 'ex*','test' ]
@@ -166,7 +167,8 @@ targets:
             "tags": ["discovery-syncer-auto"]
         }
 
-```
+</code></pre>
+</details>
 
 ### Api接口
 
