@@ -1,6 +1,7 @@
 import json
 import tempfile
 from string import Template
+from threading import Thread
 from typing import List
 
 import httpx
@@ -76,6 +77,8 @@ ignore_uris = ["plugins/list"]
 
 alias_uris = {"ssl": "ssls", "proto": "protos", "ssls": "ssl", "protos": "proto"}
 
+has_upstream = ["/apisix/routes/", "/apisix/stream_routes/", "/apisix/services/", "/apisix/upstreams/"]
+
 
 class Apisix(Gateway):
     def __init__(self, config):
@@ -141,7 +144,12 @@ class Apisix(Gateway):
             if self.VERSION not in item.get("version"):
                 continue
             resp = self.apisix_execute("GET", uri, {}, None)
-            val[item.get("field")] = resp.get("list", resp)
+            val[item.get("field")] = []
+            for vv in resp.get("list"):
+                item_val = vv.get("value", vv)
+                if item_val.get("status", 1) == 0:
+                    continue
+                val[item.get("field")].append(item_val)
 
         yaml.SafeDumper.org_represent_str = yaml.SafeDumper.represent_str
 
@@ -154,7 +162,7 @@ class Apisix(Gateway):
             f.write(content)
         return content, tempfile.gettempdir() + "\\apisix.yaml"
 
-    def migrate_to(self, target_gateway: Gateway):
+    async def migrate_to(self, target_gateway: Gateway):
         assert isinstance(target_gateway, Apisix), "目前仅支持apisix网关之间的迁移"
 
         for uri, item in apisix_uri_dict.items():
@@ -165,47 +173,62 @@ class Apisix(Gateway):
                 continue
 
             alias_uri = alias_uris.get(uri, uri)
+            threads = []
             for val in resp.get("list"):
-                item_id = val.get("value").get("id")
-                target_gateway.apisix_execute("PUT", alias_uri + "/" + item_id, {}, json.dumps(val.get("value")))
-            pass
+                item_val = val.get("value", val)
+                item_id = item_val.get("id")
+                # item_val.pop("create_time", None)
+                # item_val.pop("update_time", None)
+                item_val.pop("validity_start", None)
+                item_val.pop("validity_end", None)
+                item_val = self.translate(target_gateway.VERSION, item_val)
+                t = Thread(target=target_gateway.apisix_execute,
+                           args=("PUT", alias_uri + "/" + item_id, {}, json.dumps(item_val)))
+                t.start()
+            for t in threads:
+                t.join()
 
     def translate(self, target_version: str, data: dict) -> dict:
         if self.VERSION == target_version: return data
         # https://apisix.apache.org/docs/apisix/upgrade-guide-from-2.15.x-to-3.0.0/
         # v2 -> v3
-        if self.VERSION == APISIX_V2 and target_version == APISIX_V3:
-            # plugin.disable -> plugin._meta.disable
-            plugins = data.get("plugins", {})
-            for name, plugin in plugins.items():
-                plugin["_meta"] = {"disable": not plugin.get("enable", True)}
-                plugin.pop("enable")
-            # route.service_protocol -> route.upstream.scheme
-            "upstream" in data and data["upstream"].update({"scheme": data["service_protocol"]}) and data.pop(
-                "service_protocol")
-            return data
-        # v3 -> v2
-        elif self.VERSION == APISIX_V3 and target_version == APISIX_V2:
-            # plugin._meta.disable -> plugin.disable
-            plugins = data.get("plugins", {})
-            for name, plugin in plugins.items():
-                plugin["enable"] = not plugin.get("_meta", {}).get("disable", True)
-                plugin.pop("_meta")
-            # route.upstream.scheme -> route.service_protocol
-            "upstream" in data and data.update({"service_protocol": data["upstream"].get("scheme")}) and data[
-                "upstream"].pop("scheme")
-            return data
+        try:
+            if self.VERSION == APISIX_V2 and target_version == APISIX_V3:
+                # plugin.disable -> plugin._meta.disable
+                plugins = data.get("plugins", {})
+                for name, plugin in plugins.items():
+                    plugin["_meta"] = {"disable": not plugin.get("enable", True)}
+                    plugin.pop("enable", None)
+                # route.service_protocol -> route.upstream.scheme
+                "upstream" in data and data["upstream"].update({"scheme": data["service_protocol"]}) and data.pop(
+                    "service_protocol", None)
+                return data
+            # v3 -> v2
+            elif self.VERSION == APISIX_V3 and target_version == APISIX_V2:
+                # plugin._meta.disable -> plugin.disable
+                plugins = data.get("plugins", {})
+                for name, plugin in plugins.items():
+                    plugin["enable"] = not plugin.get("_meta", {}).get("disable", True)
+                    plugin.pop("_meta", None)
+                # route.upstream.scheme -> route.service_protocol (enum grpc or http)
+                if "upstream" in data:
+                    scheme = data["upstream"].pop("scheme", '')
+                    if 'grpc' in scheme:
+                        data.update({"service_protocol": 'grpc'})
+                return data
+        except Exception as e:
+            logger.error(e)
+            raise e
         return data
 
     def apisix_execute(self, method, uri, params, data=None):
         resp_txt = httpx.request(method, f"{self._config.admin_url}{self._config.prefix}{uri}",
                                  params=params, data=data, timeout=10,
                                  headers={"X-API-KEY": self._config.config.get("X-API-KEY"),
-                                          "Content-Type": "application/json",
-                                          "Accept": "application/json"}).text
+                                          "Content-Type": "application/json", "Accept": "application/json"}).text
 
         logger.info(
-            f"请求apisix接口, method: {method}, url: {self._config.admin_url}{self._config.prefix}{uri}, 请求参数: {params}, 请求数据: {data}, 响应结果: {resp_txt}")
+            f"请求 apisix 接口,version: {self._config.config.get('version')}, method: {method}, url: {self._config.admin_url}{self._config.prefix}{uri}, 请求参数: {params}, 请求数据: {data}, 响应结果: {resp_txt}")
 
         resp = json.loads(resp_txt)
 
@@ -216,4 +239,8 @@ class Apisix(Gateway):
             plugins = {"list": [{"name": plugin} for plugin in resp]}
             resp = plugins
 
+        if APISIX_V3 != self._config.config.get('version') and "list" not in resp:
+            resp["list"] = resp.get("node", {}).get("nodes", [])
+            if "value" in resp.get("node", {}):
+                resp["list"].append(resp.get("node"))
         return resp

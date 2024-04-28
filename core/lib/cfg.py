@@ -55,7 +55,8 @@ def load_cfg(env: str) -> Dict[str, Any]:
     default_uvicorn_cfg = {
         'log_config': logger_cfg,
         'env_file': os.path.join(cfg_dir, 'app.cfg'),
-        'loop': 'asyncio'
+        'loop': 'asyncio',
+        'timeout_keep_alive': 300,
     }
     uvicorn_cfgpath = os.path.join(cfg_dir, 'uvicorn.json')
     uvicorn_cfg = json.loads(open(uvicorn_cfgpath, encoding=util.ENCODING).read())
@@ -68,6 +69,7 @@ def load_cfg(env: str) -> Dict[str, Any]:
         'env_file': os.path.join(cfg_dir, 'app.cfg'),
         'threads': 2,
         "worker_class": "uvicorn.workers.UvicornWorker",
+        "timeout": 300
     }
     gunicorn_cfgpath = os.path.join(cfg_dir, 'gunicorn.json')
     gunicorn_cfg = json.loads(open(gunicorn_cfgpath, encoding=util.ENCODING).read())

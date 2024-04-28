@@ -191,3 +191,4 @@ cython_debug/
 .idea/
 *.db
 .git/
+config.yaml

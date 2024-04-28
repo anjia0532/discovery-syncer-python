@@ -5,14 +5,19 @@ import sys
 import time
 from collections import OrderedDict
 from queue import Queue
+# noinspection PyPackageRequirements
+# from elasticsearch import Elasticsearch, helpers  # 性能导入时间消耗2秒,实例化时候再导入。
 from threading import Thread
 
 from funboost.core.current_task import funboost_current_task
 from funboost.core.task_id_logger import TaskIdLogger
 from nb_log import LogManager
+from nb_log.monkey_print import nb_print
 
 from nb_log_config import IS_ADD_ELASTIC_HANDLER, \
     NB_LOG_FORMATER_INDEX_FOR_CONSUMER_AND_PUBLISHER, ELASTIC_HOST, computer_name
+
+very_nb_print = nb_print
 
 
 def get(name: str = '', tag: str = '') -> logging.Logger:

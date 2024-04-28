@@ -297,3 +297,5 @@ cython_debug/
 .idea/
 
 *.db
+
+config.yaml

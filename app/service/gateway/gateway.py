@@ -21,7 +21,7 @@ class Gateway(object):
         pass
 
     @abstractmethod
-    def migrate_to(self, target_gateway: 'Gateway'):
+    async def migrate_to(self, target_gateway: 'Gateway'):
         pass
 
     def get_upstream_name(self, target: dict, upstream_name: str) -> str:

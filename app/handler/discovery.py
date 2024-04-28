@@ -74,7 +74,7 @@ def gateway_to_file(gateway_name: Annotated[str, Path(title="gateway_name", desc
 
 
 @router.post("/migrate/{origin_gateway_name}/to/{target_gateway_name}")
-def migrate_gateway(
+async def migrate_gateway(
         origin_gateway_name: Annotated[str, Path(title="origin_gateway_name", description="数据来源网关中心名称")],
         target_gateway_name: Annotated[str, Path(title="target_gateway_name", description="数据迁入目标网关中心名称")]):
     """
@@ -91,7 +91,7 @@ def migrate_gateway(
 
         target_gateway_client: Gateway = gateway_clients.get(target_gateway_name)
         assert target_gateway_client, f"没有获取到数据迁入网关实例{target_gateway_name}"
-        origin_gateway_client.migrate_to(target_gateway_client)
+        await origin_gateway_client.migrate_to(target_gateway_client)
     except Exception as e:
         return Response(status_code=500, content=f"{e.args[0]}")
     return Response(status_code=200, content="OK")
