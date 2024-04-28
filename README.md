@@ -18,8 +18,10 @@ docker run anjia0532/discovery-syncer-python:v2.1.0
 ### 配置文件
 
 <details>
-<summary>config.yaml</summary>
+<summary>点击查看 config.yaml</summary>
 <pre><code>
+
+```yaml
 # 注册中心,map形式
 discovery-servers:
   # nacos1 是注册中心的名字，可以随便定义，但是不能重复
@@ -166,6 +168,7 @@ targets:
             },
             "tags": ["discovery-syncer-auto"]
         }
+```
 
 </code></pre>
 </details>
@@ -241,7 +244,8 @@ code是200
 
 **注意**
 
-精力有限，目前仅实现了 apisix 的 admin api 转 yaml 功能和 apisix 实例间数据迁移，kong 的未实现，有需要的，欢迎提PR贡献代码或者提 issues 来反馈
+精力有限，目前仅实现了 apisix 的 admin api 转 yaml 功能和 apisix 实例间数据迁移，kong 的未实现，有需要的，欢迎提PR贡献代码或者提
+issues 来反馈
 
 ## 待优化点
 
