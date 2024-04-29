@@ -48,7 +48,6 @@ targets:
             namespaceId: test
             template: |
                 {
-                    "id": "$name",
                     "timeout": {
                         "connect": 30,
                         "send": 30,

@@ -18,7 +18,6 @@ logger = for_service(__name__)
 
 default_apisix_upstream_template = """
 {
-    "id": "$name",
     "name": "$name",
     "nodes": $nodes,
     "timeout": {
