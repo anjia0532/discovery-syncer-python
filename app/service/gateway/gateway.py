@@ -17,7 +17,7 @@ class Gateway(object):
         pass
 
     @abstractmethod
-    def fetch_admin_api_to_file(self) -> Tuple[str, str]:
+    def fetch_admin_api_to_file(self, file_name: str) -> Tuple[str, str]:
         pass
 
     @abstractmethod

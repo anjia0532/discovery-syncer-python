@@ -1,10 +1,12 @@
+import base64
 import re
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import APIRouter
 from fastapi import Response
-from fastapi.params import Path, Body
+from fastapi.params import Path, Body, Query
 
+from app.handler import RESP_OK
 from app.model.syncer_model import Registration, RegistrationType, RegistrationStatus
 from app.service.discovery.discovery import Discovery
 from app.service.gateway.gateway import Gateway
@@ -21,58 +23,71 @@ def discovery(discovery_name: Annotated[str, Path(title="discovery_name", descri
               registration: Annotated[Registration, Body(title="Registration", description="入参")]):
     """
     主动下线上线注册中心的服务,配合CI/CD发版业务用
-    @param registration: 服务上下线信息
+    @rtype: str
     @param discovery_name: 注册中心名称
-    @return: 结果
+    @param registration: 服务上下线信息
+    @return: 成功返回 OK
     """
-    from app.model.config import discovery_clients
-    discovery_client: Discovery = discovery_clients.get(discovery_name)
-    if not discovery_client:
-        return Response(status_code=404, content=f"没有获取到注册中心实例{discovery_name}")
-    discovery_instances, last_time = discovery_client.get_service_all_instances(registration.service_name,
-                                                                                registration.ext_data,
-                                                                                enabled_only=False)
-    instances = []
-    for instance in discovery_instances:
-        val = ""
-        if registration.type == RegistrationType.METADATA:
-            val = instance.metadata.get(registration.metadata_key, "")
-            if len(val) == 0:
+    try:
+        from app.model.config import discovery_clients
+        discovery_client: Discovery = discovery_clients.get(discovery_name)
+        if not discovery_client:
+            return Response(status_code=404, content=f"没有获取到注册中心实例{discovery_name}")
+        discovery_instances, last_time = discovery_client.get_service_all_instances(registration.service_name,
+                                                                                    registration.ext_data,
+                                                                                    enabled_only=False)
+        instances = []
+        for instance in discovery_instances:
+            val = ""
+            if registration.type == RegistrationType.METADATA:
+                val = instance.metadata.get(registration.metadata_key, "")
+                if len(val) == 0:
+                    if registration.other_status != RegistrationStatus.ORIGIN:
+                        instance.enabled = registration.other_status == RegistrationStatus.UP
+                        instance.change = True
+                    continue
+            elif registration.type == RegistrationType.IP:
+                val = instance.ip
+            if re.match(registration.regexp_str or '', val):
+                instance.enabled = registration.status == RegistrationStatus.UP
+                instance.change = True
+            else:
                 if registration.other_status != RegistrationStatus.ORIGIN:
                     instance.enabled = registration.other_status == RegistrationStatus.UP
                     instance.change = True
-                continue
-        elif registration.type == RegistrationType.IP:
-            val = instance.ip
-        if re.match(registration.regexp_str or '', val):
-            instance.enabled = registration.status == RegistrationStatus.UP
-            instance.change = True
-        else:
-            if registration.other_status != RegistrationStatus.ORIGIN:
-                instance.enabled = registration.other_status == RegistrationStatus.UP
-                instance.change = True
-        if instance.change:
-            instances.append(instance)
-    discovery_client.modify_registration(registration, instances=instances)
-    return Response(status_code=200, content="OK")
+            if instance.change:
+                instances.append(instance)
+        discovery_client.modify_registration(registration, instances=instances)
+    except Exception as e:
+        logger.error(f"主动下线上线注册中心的服务失败,discovery_name {discovery_name},registration {registration}",
+                     exc_info=e)
+        return Response(status_code=500, content=f"{e.args}")
+    return Response(status_code=200, content=RESP_OK)
 
 
 @router.get("/gateway-api-to-file/{gateway_name}")
-def gateway_to_file(gateway_name: Annotated[str, Path(title="gateway_name", description="网关中心名称")]):
+def gateway_to_file(gateway_name: str = Path(title="gateway_name", description="网关中心名称"),
+                    file_name: Optional[str] = Query(default=None, title="file_name", description="文件名称")):
     """
     读取网关admin api转换成文件用于备份或者db-less模式
+    @rtype: str
     @param gateway_name: 网关名称
-    @return: 结果
+    @param file_name: 文件名称
+    @return: 成功返回db-less配置文件
     """
     try:
         from app.model.config import gateway_clients
         gateway_client: Gateway = gateway_clients.get(gateway_name)
         if not gateway_client:
             return Response(status_code=404, content=f"没有获取到网关实例{gateway_name}")
-        content, file = gateway_client.fetch_admin_api_to_file()
+        content, file = gateway_client.fetch_admin_api_to_file(file_name)
         return Response(status_code=200, content=content, headers={"syncer-file-location": f"{file}"})
     except Exception as e:
-        return Response(status_code=500, headers={"syncer-err-msg": f"{e.args[0]}"})
+        logger.error(
+            f"读取网关admin api转换成文件用于备份或者db-less模式失败,gateway_name :{gateway_name},file_name:{file_name}",
+            exc_info=e)
+        return Response(status_code=500,
+                        headers={"syncer-err-msg": base64.b64encode(f"{e.args}".encode("utf-8")).decode("utf-8")})
 
 
 @router.post("/migrate/{origin_gateway_name}/to/{target_gateway_name}")
@@ -81,9 +96,10 @@ async def migrate_gateway(
         target_gateway_name: Annotated[str, Path(title="target_gateway_name", description="数据迁入目标网关中心名称")]):
     """
     将网关数据迁移(目前仅支持apisix)
+    @rtype: str
     @param origin_gateway_name: 数据来源网关中心名称
     @param target_gateway_name: 数据迁入目标网关中心名称
-    @return:
+    @return: 成功返回 OK
     """
     try:
         from app.model.config import gateway_clients
@@ -98,8 +114,11 @@ async def migrate_gateway(
 
         await origin_gateway_client.migrate_to(target_gateway_client)
     except Exception as e:
-        return Response(status_code=500, content=f"{e.args[0]}")
-    return Response(status_code=200, content="OK")
+        logger.error(
+            f"将网关数据迁移失败,origin_gateway_name :{origin_gateway_name},target_gateway_name:{target_gateway_name}",
+            exc_info=e)
+        return Response(status_code=500, content=f"{e.args}")
+    return Response(status_code=200, content=RESP_OK)
 
 
 @router.put("/restore/{target_gateway_name}")
@@ -110,7 +129,7 @@ async def restore_gateway(
     通过文件还原网关数据(目前仅支持apisix)
     @param body: 待还原配置文件数据
     @param target_gateway_name: 数据迁入目标网关中心名称
-    @return:
+    @return: 成功返回 OK
     """
     try:
         from app.model.config import gateway_clients
@@ -120,5 +139,8 @@ async def restore_gateway(
             return Response(status_code=404, content=f"没有获取到待还原网关实例{target_gateway_name}")
         await target_gateway_client.restore_gateway(body)
     except Exception as e:
-        return Response(status_code=500, content=f"{e.args[0]}")
-    return Response(status_code=200, content="OK")
+        logger.error(
+            f"通过文件还原网关数据,target_gateway_name :{target_gateway_name},body:{body}",
+            exc_info=e)
+        return Response(status_code=500, content=f"{e.args}")
+    return Response(status_code=200, content=RESP_OK)

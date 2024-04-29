@@ -1,8 +1,10 @@
 import json
+import pathlib
 import tempfile
 from string import Template
 from threading import Thread
 from typing import List
+import re
 
 import httpx
 import yaml
@@ -29,21 +31,33 @@ default_apisix_upstream_template = """
 }
 """
 
-apisix_config_template = """
-# Auto generate by https://github.com/anjia0532/discovery-syncer-python, Don't Modify
+APISIX_V2 = "v2"
+APISIX_V3 = "v3"
 
+apisix_config_version_comment = {
+    APISIX_V2: """
 # apisix 2.x modify conf/config.yaml https://apisix.apache.org/docs/apisix/2.15/stand-alone/
 # apisix:
 #  enable_admin: false
 #  config_center: yaml
-
+""",
+    APISIX_V3: """
 # apisix 3.x modify conf/config.yaml https://apisix.apache.org/docs/apisix/3.2/deployment-modes/#standalone
 # deployment:
 #  role: data_plane
 #  role_data_plane:
 #    config_provider: yaml
+"""
+}
+
+apisix_config_template = """
+# Auto generate by https://github.com/anjia0532/discovery-syncer-python, Don't Modify
+
+$VersionComment
 
 # save as conf/apisix.yaml
+
+# Notice!!! Generate apisix version is >>>  $Version  <<< 
 
 $Value
 
@@ -51,9 +65,6 @@ $Value
 """
 
 fetch_all_upstream = "upstreams"
-
-APISIX_V2 = "v2"
-APISIX_V3 = "v3"
 
 apisix_uri_dict = {
     "ssl": {"version": [APISIX_V2], "field": "ssl", "order": 0},
@@ -134,7 +145,7 @@ class Apisix(Gateway):
         resp = self.apisix_execute(method, uri, {}, body)
         logger.info("更新upstream结果: %s", resp)
 
-    def fetch_admin_api_to_file(self):
+    def fetch_admin_api_to_file(self, file_name: str):
         """
         从apisix获取upstream信息，并保存到文件
         @return:
@@ -156,13 +167,20 @@ class Apisix(Gateway):
         yaml.add_representer(str, repr_str, Dumper=yaml.SafeDumper)
 
         content = Template(apisix_config_template).substitute(
-            Value=yaml.safe_dump(val, sort_keys=True, allow_unicode=True, default_flow_style=False))
-
-        with open(tempfile.gettempdir() + "\\apisix.yaml", "w") as f:
+            Value=yaml.safe_dump(val, sort_keys=True, allow_unicode=True, default_flow_style=False),
+            VersionComment=apisix_config_version_comment.get(self.VERSION),
+            Version=self.VERSION)
+        file_name = file_name or tempfile.gettempdir() + "/apisix.yaml"
+        pathlib.Path(file_name).mkdir(parents=True, exist_ok=True)
+        with open(file_name, "w") as f:
             f.write(content)
-        return content, tempfile.gettempdir() + "\\apisix.yaml"
+        return content, file_name
 
     async def restore_gateway(self, body: str):
+        versions = re.findall(r">>>  (\w+)  <<<", body or '')
+        if versions and self.VERSION != versions[0]:
+            logger.warning(
+                f"通过配置文件还原apisix配置，apisix version: {self.VERSION}, 配置文件 version: {versions[0]} 不同版本导入可能会失败")
         data = yaml.safe_load(body)
         threads = []
         for uri, item in sorted(apisix_uri_dict.items(), key=lambda x: x[1].get("order")):

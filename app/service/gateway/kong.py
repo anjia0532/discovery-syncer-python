@@ -66,7 +66,7 @@ class Kong(Gateway):
                 method = "DELETE"
             self.kong_execute(method, target_uri, {}, data)
 
-    def fetch_admin_api_to_file(self) -> Tuple[str, str]:
+    def fetch_admin_api_to_file(self, file_name: str) -> Tuple[str, str]:
         # https://docs.konghq.com/gateway/3.6.x/production/deployment-topologies/db-less-and-declarative-config/
         raise Exception("Unrealized")
 
