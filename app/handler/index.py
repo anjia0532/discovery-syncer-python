@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from fastapi import Response
 from starlette.responses import JSONResponse
 
-from app.handler import RESP_OK
+from . import RESP_OK
 from app.model.syncer_model import Jobs
 from core.database import db
 from core.lib.logger import for_handler

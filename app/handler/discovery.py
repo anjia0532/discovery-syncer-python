@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from fastapi import Response
 from fastapi.params import Path, Body, Query
 
-from app.handler import RESP_OK
+from . import RESP_OK
 from app.model.syncer_model import Registration, RegistrationType, RegistrationStatus
 from app.service.discovery.discovery import Discovery
 from app.service.gateway.gateway import Gateway
