@@ -143,6 +143,7 @@ plugins: [ ]
 ```
 
 **注意**
+
 仅限同版本还原，不支持跨版本还原，如apisix 2.x 还原到 apisix 3.x，apisix 3.x 还原到 apisix 2.x。有需要跨版本的
 精力有限，目前仅实现了 apisix 的 yaml 还原 apisix ，kong 的未实现，有需要的，欢迎提PR贡献代码或者提issues 来反馈
 
