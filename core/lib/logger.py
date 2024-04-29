@@ -159,10 +159,8 @@ class ElasticHandler(logging.Handler):
             elif record.levelno == 50:
                 level_str = 'CRITICAL'
             log_info_dict = OrderedDict()
-            fct = funboost_current_task()
 
             log_info_dict['@timestamp'] = datetime.datetime.utcfromtimestamp(record.created).isoformat()
-            log_info_dict['time'] = time.strftime('%Y-%m-%d %H:%M:%S')
             log_info_dict['name'] = record.name
             log_info_dict['host'] = self.host_name
             log_info_dict['host_process'] = self.host_process
@@ -176,7 +174,7 @@ class ElasticHandler(logging.Handler):
             if record.task_id:
                 log_info_dict['task_id'] = record.task_id
             self.__add_task_to_bulk({
-                "_index": f'{self._index_prefix}{record.name.lower()}',
+                "_index": f'{self._index_prefix}{time.strftime("%Y.%m.%d")}',
                 "_source": log_info_dict
             })
 
