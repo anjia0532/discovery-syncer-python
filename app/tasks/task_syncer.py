@@ -31,6 +31,8 @@ def get_discovery_client(name: str) -> Discovery:
     @return: 注册中心实例
     """
     from app.model.config import discovery_clients
+    if not discovery_clients:
+        reload.publish(msg={})
     discovery_client = discovery_clients.get(name)
     return discovery_client
 
@@ -42,6 +44,8 @@ def get_gateway_client(name: str) -> Gateway:
     @return: 网关实例
     """
     from app.model.config import gateway_clients
+    if not gateway_clients:
+        reload.publish(msg={})
     gateway_client = gateway_clients.get(name)
     return gateway_client
 
@@ -89,7 +93,7 @@ def syncer(target: dict):
         if not discovery_instances:
             discovery_instances, last_time = discovery_client.get_service_all_instances(service.name,
                                                                                         target.get("config"))
-            service.last_time = last_time > 0 and last_time or int(NbTime().timestamp)
+            service.last_time = last_time and last_time > 0 or int(NbTime().timestamp)
         logger.info(
             f"同步服务实例, 作业: {target.get('id')}, service_name: {service.name}, 最后更新时间为: {NbTime(service.last_time).datetime_str} ,instances: {discovery_instances}")
 
