@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from .middlewares import LimitUploadSize, CostTimeHeaderMiddleware, log_request, AllExceptionHandler
+from .middlewares import LimitUploadSize, CostTimeHeaderMiddleware, log_request, AllExceptionHandler, \
+    SyncerApiKeyMiddleware
+
 
 
 def register_middlewares(app: FastAPI):
@@ -12,3 +14,4 @@ def register_middlewares(app: FastAPI):
     app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=["*"], allow_headers=["*"])
     app.add_middleware(CostTimeHeaderMiddleware)
     app.add_middleware(AllExceptionHandler)
+    app.add_middleware(SyncerApiKeyMiddleware)

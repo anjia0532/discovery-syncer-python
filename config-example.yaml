@@ -1,3 +1,5 @@
+common:
+  syncer-api-key: NopU13xRheZng2hqHAwaI0TF5VHNN05G
 discovery-servers:
     nacos1:
         type: nacos

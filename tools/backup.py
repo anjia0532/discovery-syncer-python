@@ -75,7 +75,8 @@ def backup_syncer_jobs_to_local(syncer_jobs=None, base_dir: str = DEFAULT_BASE_D
                 pathlib.Path(f"{config_dir}").mkdir(parents=True, exist_ok=True)
                 with open(f"{config_dir}/{syncer['base_name']}", 'w') as f:
                     try:
-                        resp = httpx.get(f"{syncer['syncer']}/gateway-api-to-file/{gateway}")
+                        resp = httpx.get(f"{syncer['syncer']}/gateway-api-to-file/{gateway}",
+                                         headers={"SYNCER-API-KEY": f"{syncer['syncer_api_key']}"})
                         status_code = resp.status_code
                         syncer_err_msg = resp.headers.get("syncer-err-msg", None)
                         if status_code == 200:
@@ -104,7 +105,8 @@ def backup_syncer_jobs_to_local(syncer_jobs=None, base_dir: str = DEFAULT_BASE_D
 import httpx
 
 with open("{syncer['base_name']}", 'r', encoding='UTF-8') as f:
-    resp = httpx.put("{syncer['syncer']}/restore/{gateway}", content="\\n".join(f.readlines())).text
+    resp = httpx.put("{syncer['syncer']}/restore/{gateway}", content="\\n".join(f.readlines()),
+                                         headers={"SYNCER-API-KEY": f"{syncer['syncer_api_key']}"}).text
     print(f"还原{config_dir}/{syncer['base_name']} 到 {syncer['syncer']}/restore/{gateway},结果为: {{resp}}")
 """)
             print(f"进入{config_dir}目录，并执行 python restore.py 还原网关{gateway}配置")
@@ -116,7 +118,8 @@ if __name__ == '__main__':
         "apisix1": {
             "syncer": "http://localhost:9797",
             "gateways": ["apisix1"],
-            "base_name": "apisix.yaml"
+            "base_name": "apisix.yaml",
+            "syncer_api_key": "NopU13xRheZng2hqHAwaI0TF5VHNN05G"
         }
     }
 

@@ -43,7 +43,7 @@ init_core_modules(APP)
 # 注册自定义错误
 # register_exceptions(APP)
 # 注册中间件
-# register_middlewares(APP)
+register_middlewares(APP)
 
 # 注册业务路由
 register_router(APP)

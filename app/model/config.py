@@ -21,6 +21,17 @@ class GatewayType(Enum):
     APISIX = "apisix"
 
 
+class Common(BaseModel):
+    syncer_api_key: str = Field('', alias="syncer-api-key")
+
+    @model_validator(mode='after')
+    def check_common(self) -> 'Common':
+        assert self.syncer_api_key and self.syncer_api_key != 'NopU13xRheZng2hqHAwaI0TF5VHNN05G', "安全起见请正确填写接口安全key"
+        assert re.compile(r'^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{32,}$').fullmatch(
+            self.syncer_api_key), "请设置复杂安全key（长度最少为32位，必须同时包含字母、数字、特殊字符）"
+        return self
+
+
 class Discovery(BaseModel):
     type: DiscoveryType = None
     weight: float = 1.0
@@ -74,6 +85,7 @@ class Targets(BaseModel):
 
 
 class Config(BaseModel):
+    common: Common = Field(..., alias="common")
     discovery_servers: Dict[str, Discovery] = Field(..., alias="discovery-servers")
     gateway_servers: Dict[str, Gateway] = Field(..., alias="gateway-servers")
     targets: List[Targets] = None
@@ -83,6 +95,7 @@ class Config(BaseModel):
         assert len(self.discovery_servers), "discovery-servers 必填，注册中心列表"
         assert len(self.gateway_servers), "gateway-servers 必填，网关列表"
         assert len(self.targets) > 0, "targets 必填，同步作业列表"
+        assert self.common is not None, "common 必填，常规配置"
         return self
 
 

@@ -38,6 +38,21 @@ class LimitUploadSize(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class SyncerApiKeyMiddleware(BaseHTTPMiddleware):
+    """限制上传大小"""
+
+    def __init__(self, app: ASGIApp):
+        super().__init__(app)
+        self.default_api_key = "NopU13xRheZng2hqHAwaI0TF5VHNN05G"
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        from app.model.config import settings as app_settings
+        if request.headers.get("SYNCER-API-KEY", self.default_api_key) != app_settings.config.common.syncer_api_key:
+            return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+
+        return await call_next(request)
+
+
 class CostTimeHeaderMiddleware(BaseHTTPMiddleware):
     """请求响应耗时"""
 

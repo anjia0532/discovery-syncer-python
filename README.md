@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.3.0
+docker run anjia0532/discovery-syncer-python:v2.4.0
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -21,7 +21,10 @@ docker run anjia0532/discovery-syncer-python:v2.3.0
 
 ### Api接口
 
-**注意:** 请勿将此服务暴露到公网，否则对于引发的一切安全事故概不负责。
+**注意:** 
+
+请勿将此服务暴露到公网，否则对于引发的一切安全事故概不负责。安全起见，所有接口统一都增加 `SYNCER-API-KEY` header 头校验，值在配置文件 `common.syncer-api-key` 配置
+长度最低为32位，需要同时包含大小写字母，数字，和特殊字符
 
 | 路径                                               | 返回值        | 用途                                                     |
 |--------------------------------------------------|:-----------|:-------------------------------------------------------|
