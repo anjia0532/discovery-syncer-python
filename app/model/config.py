@@ -37,6 +37,7 @@ class Discovery(BaseModel):
     weight: float = 1.0
     prefix: str = None
     host: str = None
+    config: dict = None
 
     @model_validator(mode='after')
     def check_discovery(self) -> 'Discovery':

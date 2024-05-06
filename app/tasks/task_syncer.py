@@ -124,17 +124,18 @@ def reload():
     from app.model.config import settings, discovery_clients, gateway_clients
     clear_client()
     # key 为 name，value 为 discovery client
+
     if settings.config.discovery_servers:
         for name, discovery in settings.config.discovery_servers.items():
             cls = getattr(importlib.import_module(f"app.service.discovery.{discovery.type.value}"),
-                          discovery.type.value.title())
+                          ''.join([k.title() for k in discovery.type.value.split('_')]))
             client = cls(discovery)
             discovery_clients[name] = client
     # key 为 name，value 为 gateway client
     if settings.config.gateway_servers:
         for name, gateway in settings.config.gateway_servers.items():
             cls = getattr(importlib.import_module(f"app.service.gateway.{gateway.type.value}"),
-                          gateway.type.value.title())
+                          ''.join([k.title() for k in gateway.type.value.split('_')]))
             client = cls(gateway)
             gateway_clients[name] = client
     sqla_helper = db.get_sqla_helper()[1]

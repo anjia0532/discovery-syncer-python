@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.4.0
+docker run anjia0532/discovery-syncer-python:v2.4.1
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -21,9 +21,10 @@ docker run anjia0532/discovery-syncer-python:v2.4.0
 
 ### Api接口
 
-**注意:** 
+**注意:**
 
-请勿将此服务暴露到公网，否则对于引发的一切安全事故概不负责。安全起见，所有接口统一都增加 `SYNCER-API-KEY` header 头校验，值在配置文件 `common.syncer-api-key` 配置
+请勿将此服务暴露到公网，否则对于引发的一切安全事故概不负责。安全起见，所有接口统一都增加 `SYNCER-API-KEY` header
+头校验，需要在配置文件 `common.syncer-api-key` 修改默认值，
 长度最低为32位，需要同时包含大小写字母，数字，和特殊字符
 
 | 路径                                               | 返回值        | 用途                                                     |
@@ -38,7 +39,9 @@ docker run anjia0532/discovery-syncer-python:v2.4.0
 | `POST /migrate/{gateway-name}/to/{gateway-name}` | `OK`       | 将网关数据迁移(目前仅支持apisix)                                   |
 | `PUT /restore/{gateway-name}`                    | `OK`       | 将 db-less 文件还原到网关(目前仅支持apisix)                         |
 
-#### `GET /-/reload` 重新加载配置文件，加载成功返回OK
+#### `GET /-/reload` 重新加载配置文件
+
+加载成功返回OK
 
 主要是 cicd 场景或者 k8s 的 configmap reload 场景使用
 
@@ -69,7 +72,7 @@ docker run anjia0532/discovery-syncer-python:v2.4.0
 
 #### `PUT /discovery/{discovery-name}` 主动下线上线注册中心的服务,配合CI/CD发版业务用
 
-中的name是注册中心的名字，如果不存在，则返回 `Not Found` http status code 是404
+discovery-name 是注册中心的名字，如果不存在，则返回 `Not Found` http status code 是404
 
 body入参
 
@@ -95,9 +98,9 @@ body入参
 
 #### `GET /gateway-api-to-file/{gateway-name}?file=/tmp/apisix.yaml` 读取网关admin api转换成文件用于备份或者db-less模式
 
-gateway-name是网关的名字，如果不存在，则返回 `Not Found`，http status code是404
+gateway-name 是网关的名字，如果不存在，则返回 `Not Found`，http status code是404
 
-如果服务报错，resp body 会返回空字符串，header 中的 `syncer-err-msg` 会返回具体原因 http status code 是500参数 `file`
+如果服务报错，resp body 会返回空字符串，header 中的 `syncer-err-msg` 会返回具体原因，http status code 是500，参数 `file`
 是可选的，如果不传，则默认`/tmp/文件名` 比如 `/tmp/apisix.yaml`，并返回文件路径
 
 如果正常，resp body 会返回转换后的文本内容，`syncer-file-location` 会返回syncer服务端的路径(
@@ -154,11 +157,139 @@ plugins: [ ]
 
 ## 待优化点
 
-1. ~~目前的同步任务是串行的，如果待同步的量比较大，或者同步时间窗口设置的特别小的情况下，会导致挤压~~
+1. 已解决 ~~目前的同步任务是串行的，如果待同步的量比较大，或者同步时间窗口设置的特别小的情况下，会导致挤压~~
 
-2. 不支持自定义同步插件，不利于自行扩展
+2. 已解决 ~~不支持自定义同步插件，不利于自行扩展~~
 
 3. 同步机制目前是基于定时轮询，效率比较低，有待优化，比如增加缓存开关，上游注册中心与缓存比对没有差异的情况下，不去拉取/变更下游网关的upstream信息，或者看看注册中心支不支持变动主动通知机制等。
+
+## 新增服务发现或者网关插件
+
+### 服务发现
+
+修改 [app.model.config.DiscoveryType](https://github.com/anjia0532/discovery-syncer-python/blob/f184e1b67ba0a5a47d2d895a2c22acfb46b61b5f/app/model/config.py#L14-L16) 新增类型,比如
+
+```python
+class DiscoveryType(Enum):
+    NACOS = "nacos"
+    EUREKA = "eureka"
+    # 新增 redis
+    REDIS = "redis"
+```
+
+创建 `app/service/discovery/redis.py` 文件
+
+```python
+from typing import List
+
+from app.model.syncer_model import Service, Instance, Registration
+from app.service.discovery.discovery import Discovery
+from core.lib.logger import for_service
+
+logger = for_service(__name__)
+
+
+class Redis(Discovery):
+
+    def __init__(self, config):
+        super().__init__(config)
+
+    def get_all_service(self, config: dict, enabled_only: bool = True) -> List[Service]:
+        pass
+
+    def get_service_all_instances(self, service_name: str, ext_data: dict, enabled_only: bool = True) -> tuple[
+        List[Instance], int]:
+        pass
+
+    def modify_registration(self, registration: Registration, instances: List[Instance]):
+        pass
+```
+
+修改 `config.yaml`
+
+```yaml
+discovery-servers:
+    redis1:
+        type: redis
+        weight: 100
+        prefix: 2
+        host: "redis://localhost:6379"
+        config:
+          demo: demo
+gateway-servers:
+    apisix1:
+        type: apisix
+        admin-url: http://apisix-server:9080
+        prefix: /apisix/admin/
+        config:
+            X-API-KEY: xxxxxxxx-xxxx-xxxxxxxxxxxx
+            version: v3
+targets:
+    -   discovery: redis
+        gateway: apisix1
+        enabled: false
+        # .. 忽略其他部分
+```
+
+### 网关
+
+修改 [app.model.config.GatewayType](https://github.com/anjia0532/discovery-syncer-python/blob/f184e1b67ba0a5a47d2d895a2c22acfb46b61b5f/app/model/config.py#L19-L21) 新增类型,比如
+
+```python
+class GatewayType(Enum):
+    KONG = "kong"
+    APISIX = "apisix"
+    SPRING_GATEWAY = "spring_gateway"
+```
+
+创建 `app/service/gateway/spring_gateway.py` 文件
+
+```python
+from typing import Tuple, List
+
+from app.model.syncer_model import Instance
+from app.service.gateway.gateway import Gateway
+
+
+class SpringGateway(Gateway):
+    def __init__(self, config):
+        super().__init__(config)
+
+    def get_service_all_instances(self, target: dict, upstream_name: str = None) -> List[Instance]:
+        pass
+
+    def sync_instances(self, target: dict, upstream_name: str, diff_ins: list, instances: list):
+        pass
+
+    def fetch_admin_api_to_file(self, file_name: str) -> Tuple[str, str]:
+        pass
+
+    async def migrate_to(self, target_gateway: 'Gateway'):
+        pass
+```
+
+修改 `config.yaml`
+
+```yaml
+discovery-servers:
+    nacos1:
+        type: nacos
+        weight: 100
+        prefix: /nacos/v1/
+        host: "http://nacos-server:8858"
+gateway-servers:
+    spring_gateway1:
+        type: spring_gateway
+        admin-url: http://gateway-server:9080
+        prefix: /
+        config:
+            demo: xxxxxxxx-xxxx-xxxxxxxxxxxx
+targets:
+    -   discovery: nacos1
+        gateway: spring_gateway1
+        enabled: false
+        # .. 忽略其他部分
+```
 
 Copyright and License
 ---
