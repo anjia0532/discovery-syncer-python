@@ -102,12 +102,6 @@ class JsonFormatterJumpAble(JsonFormatter):
             del log_record['for_segmentation_color']
 
 
-DING_TALK_TOKEN = '3dd0eexxxxxadab014bd604XXXXXXXXXXXX'  # 钉钉报警机器人
-
-IS_ADD_ELASTIC_HANDLER = False
-ELASTIC_HOST = 'http://127.0.0.1:9200'
-ELASTIC_PORT = 9200
-
 RUN_ENV = 'test'
 
 FORMATTER_DICT = {
@@ -153,3 +147,12 @@ FORMATTER_DICT = {
 FORMATTER_KIND = 11  # 如果get_logger不指定日志模板，则默认选择第几个模板
 
 NB_LOG_FORMATER_INDEX_FOR_CONSUMER_AND_PUBLISHER = FORMATTER_DICT[12]
+
+IS_ADD_DING_TALK_HANDLER = False
+DING_TALK_TOKEN = '3dd0eexxxxxadab014bd604XXXXXXXXXXXX'  # 钉钉报警机器人
+DING_TALK_SECRET = None  # 钉钉报警机器人签名
+TIME_INTERVAL = 0
+DING_TALK_MSG_TEMPLATE = r'{"msgtype":"markdown","markdown":{"title":"discovery-syncer-python","text":"**时间:** %(asctime)s\n\n**任务:** %(task_id)s\n\n**脚本:** %(pathname)s\n\n**函数:** %(funcName)s\n\n**行号:** %(lineno)s\n\n**信息:** %(msg)s"}}'
+
+IS_ADD_ELASTIC_HANDLER = False
+ELASTIC_HOST = 'http://127.0.0.1:9200'

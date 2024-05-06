@@ -299,3 +299,5 @@ cython_debug/
 *.db
 
 config.yaml
+
+/tools/syncer/

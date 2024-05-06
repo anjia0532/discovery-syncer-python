@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.2.3
+docker run anjia0532/discovery-syncer-python:v2.3.0
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -20,6 +20,8 @@ docker run anjia0532/discovery-syncer-python:v2.2.3
 [点击查看 config.yaml](https://github.com/anjia0532/discovery-syncer-python/blob/master/config-example.yaml)
 
 ### Api接口
+
+**注意:** 请勿将此服务暴露到公网，否则对于引发的一切安全事故概不负责。
 
 | 路径                                               | 返回值        | 用途                                                     |
 |--------------------------------------------------|:-----------|:-------------------------------------------------------|
@@ -35,7 +37,7 @@ docker run anjia0532/discovery-syncer-python:v2.2.3
 
 #### `GET /-/reload` 重新加载配置文件，加载成功返回OK
 
-主要是cicd场景或者k8s的configmap reload 场景使用
+主要是 cicd 场景或者 k8s 的 configmap reload 场景使用
 
 #### `GET /health` 判断服务是否健康，可以配合k8s等容器服务的健康检查使用
 

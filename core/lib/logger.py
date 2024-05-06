@@ -1,23 +1,29 @@
-import datetime
+import json
+import logging
 import logging
 import os
+import socket
 import sys
 import time
 from collections import OrderedDict
+# noinspection PyUnresolvedReferences
+from logging.handlers import WatchedFileHandler
 from queue import Queue
-# noinspection PyPackageRequirements
-# from elasticsearch import Elasticsearch, helpers  # 性能导入时间消耗2秒,实例化时候再导入。
-from threading import Thread
+from threading import Lock, Thread
 
-from funboost.core.current_task import funboost_current_task
+import requests
 from funboost.core.task_id_logger import TaskIdLogger
 from nb_log import LogManager
+# noinspection PyPackageRequirements
 from nb_log.monkey_print import nb_print
 
 from nb_log_config import IS_ADD_ELASTIC_HANDLER, \
-    NB_LOG_FORMATER_INDEX_FOR_CONSUMER_AND_PUBLISHER, ELASTIC_HOST, computer_name
+    NB_LOG_FORMATER_INDEX_FOR_CONSUMER_AND_PUBLISHER, ELASTIC_HOST, computer_name, IS_ADD_DING_TALK_HANDLER, \
+    DING_TALK_TOKEN, DING_TALK_SECRET, TIME_INTERVAL, DING_TALK_MSG_TEMPLATE
 
 very_nb_print = nb_print
+
+host_name = socket.gethostname()
 
 
 def get(name: str = '', tag: str = '') -> logging.Logger:
@@ -33,9 +39,16 @@ def get(name: str = '', tag: str = '') -> logging.Logger:
         logger_name = name
     logger = LogManager(logger_name, logger_cls=TaskIdLogger).get_logger_and_add_handlers(
         formatter_template=NB_LOG_FORMATER_INDEX_FOR_CONSUMER_AND_PUBLISHER)
+
     if IS_ADD_ELASTIC_HANDLER:
         handler = ElasticHandler([ELASTIC_HOST], "")
         handler.setLevel(10)
+        logger.addHandler(handler)
+
+    if IS_ADD_DING_TALK_HANDLER:
+        handler = DingTalkHandler(DING_TALK_TOKEN, TIME_INTERVAL, DING_TALK_SECRET)
+        # warnings
+        handler.setLevel(30)
         logger.addHandler(handler)
     return logger
 
@@ -83,6 +96,76 @@ def for_task(name: str) -> logging.Logger:
     :return: task logger
     """
     return get('task', name)
+
+
+class DingTalkHandler(logging.Handler):
+    _lock_for_remove_handlers = Lock()
+
+    def __init__(self, ding_talk_token: str = None, time_interval: int = 60, ding_talk_secret: str = None):
+        super().__init__()
+        self.ding_talk_token = ding_talk_token
+        self.ding_talk_secret = ding_talk_secret
+        self._ding_talk_url = f'https://oapi.dingtalk.com/robot/send?access_token={ding_talk_token}'
+        self._current_time = 0
+        self._time_interval = time_interval  # 最好别频繁发。
+        self._msg_template = r'{"msgtype":"markdown","markdown":{"title":"discovery-syncer-python","text":"**时间:** %(asctime)s\n\n**任务:** %(task_id)s\n\n**脚本:** %(pathname)s\n\n**函数:** %(funcName)s\n\n**行号:** %(lineno)s\n\n**信息:** %(msg)s"}}'
+        self._lock = Lock()
+
+    def emit(self, record):
+        # from threading import Thread
+        with self._lock:
+            if time.time() - self._current_time > self._time_interval:
+                # very_nb_print(self._current_time)
+                self._current_time = time.time()
+                self.__emit(record)
+                # Thread(target=self.__emit, args=(record,)).start()
+
+            else:
+                very_nb_print(
+                    f'此次离上次发送钉钉消息时间间隔不足 {self._time_interval} 秒，此次不发送这个钉钉内容： {record.msg}')
+
+    def __emit(self, record):
+        data = (DING_TALK_MSG_TEMPLATE or self._msg_template) % record.__dict__
+        try:
+            # 因为钉钉发送也是使用requests实现的，如果requests调用的urllib3命名空间也加上了钉钉日志，将会造成循环，程序卡住。一般情况是在根日志加了钉钉handler。
+            self._remove_urllib_hanlder()
+            resp = requests.post(self._ding_talk_url + self.sign(),
+                                 json=json.loads(data.replace("\\", "\\\\").replace("\\\\n", "\\n")), timeout=(5, 5))
+            very_nb_print(f'钉钉返回 : {resp.text}')
+        except requests.RequestException as e:
+            very_nb_print(f"发送消息给钉钉机器人失败 {e}")
+
+    def __repr__(self):
+        level = logging.getLevelName(self.level)
+        return '<%s (%s)>' % (self.__class__.__name__, level) + ' dingtalk token is ' + self.ding_talk_token
+
+    def sign(self):
+        if not self.ding_talk_secret:
+            return ""
+        import time
+        import hmac
+        import hashlib
+        import base64
+        import urllib.parse
+        timestamp = str(round(time.time() * 1000))
+        secret_enc = self.ding_talk_secret.encode('utf-8')
+        string_to_sign = '{}\n{}'.format(timestamp, self.ding_talk_secret)
+        string_to_sign_enc = string_to_sign.encode('utf-8')
+        hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
+        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+        return "&timestamp={}&sign={}".format(timestamp, sign)
+
+    @classmethod
+    def _remove_urllib_hanlder(cls):
+        for name in ['root', 'urllib3', 'requests']:
+            cls.__remove_urllib_hanlder_by_name(name)
+
+    @classmethod
+    def __remove_urllib_hanlder_by_name(cls, logger_name):
+        with cls._lock_for_remove_handlers:
+            for index, hdlr in enumerate(logging.getLogger(logger_name).handlers):
+                if 'DingTalkHandler' in str(hdlr):
+                    logging.getLogger(logger_name).handlers.pop(index)
 
 
 # noinspection PyUnresolvedReferences
@@ -171,8 +254,7 @@ class ElasticHandler(logging.Handler):
             log_info_dict['log_level'] = level_str
             log_info_dict['msg'] = str(record.msg)
             log_info_dict['script'] = self.script_name
-            if record.task_id:
-                log_info_dict['task_id'] = record.task_id
+            log_info_dict['task_id'] = record.task_id
             self.__add_task_to_bulk({
                 "_index": f'{self._index_prefix}{time.strftime("%Y.%m.%d")}',
                 "_source": log_info_dict

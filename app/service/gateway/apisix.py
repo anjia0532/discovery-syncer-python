@@ -170,7 +170,7 @@ class Apisix(Gateway):
             VersionComment=apisix_config_version_comment.get(self.VERSION),
             Version=self.VERSION)
         file_name = file_name or tempfile.gettempdir() + "/apisix.yaml"
-        pathlib.Path(file_name).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(file_name).parent.mkdir(parents=True, exist_ok=True)
         with open(file_name, "w") as f:
             f.write(content)
         return content, file_name
@@ -254,13 +254,17 @@ class Apisix(Gateway):
         return data
 
     def apisix_execute(self, method, uri, params, data=None):
-        resp_txt = httpx.request(method, f"{self._config.admin_url}{self._config.prefix}{uri}",
-                                 params=params, data=data, timeout=10,
-                                 headers={"X-API-KEY": self._config.config.get("X-API-KEY"),
-                                          "Content-Type": "application/json", "Accept": "application/json"}).text
-
-        logger.info(
-            f"请求 apisix 接口,version: {self._config.config.get('version')}, method: {method}, url: {self._config.admin_url}{self._config.prefix}{uri}, 请求参数: {params}, 请求数据: {data}, 响应结果: {resp_txt}")
+        http_resp = httpx.request(method, f"{self._config.admin_url}{self._config.prefix}{uri}",
+                                  params=params, data=data, timeout=10,
+                                  headers={"X-API-KEY": self._config.config.get("X-API-KEY"),
+                                           "Content-Type": "application/json", "Accept": "application/json"})
+        resp_txt = http_resp.text
+        if http_resp.status_code >= 400:
+            logger.warning(
+                f"请求 apisix 接口,version: {self._config.config.get('version')}, method: {method}, url: {self._config.admin_url}{self._config.prefix}{uri}, 请求参数: {params}, 请求数据: {data}, 响应结果: {resp_txt}")
+        else:
+            logger.info(
+                f"请求 apisix 接口,version: {self._config.config.get('version')}, method: {method}, url: {self._config.admin_url}{self._config.prefix}{uri}, 请求参数: {params}, 请求数据: {data}, 响应结果: {resp_txt}")
 
         resp = json.loads(resp_txt)
 
@@ -274,5 +278,5 @@ class Apisix(Gateway):
         if APISIX_V3 != self._config.config.get('version') and "list" not in resp:
             resp["list"] = resp.get("node", {}).get("nodes", [])
             if "value" in resp.get("node", {}):
-                resp["list"].append(resp.get("node"))
+                resp["list"].append(resp.get("node", {}))
         return resp
