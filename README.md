@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.4.1
+docker run anjia0532/discovery-syncer-python:v2.4.2
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -155,19 +155,62 @@ plugins: [ ]
 仅限同版本还原，不支持跨版本还原，如apisix 2.x 还原到 apisix 3.x，apisix 3.x 还原到 apisix 2.x。有需要跨版本的
 精力有限，目前仅实现了 apisix 的 yaml 还原 apisix ，kong 的未实现，有需要的，欢迎提PR贡献代码或者提issues 来反馈
 
-## 待优化点
+## 定时备份和还原网关数据
 
-1. 已解决 ~~目前的同步任务是串行的，如果待同步的量比较大，或者同步时间窗口设置的特别小的情况下，会导致挤压~~
+### 备份
 
-2. 已解决 ~~不支持自定义同步插件，不利于自行扩展~~
+| 环境变量               | 值                                               |
+|--------------------|:------------------------------------------------|
+| SYNC_JOB_JSON      | 同步作业json文件路径                                    |
+| GIT_REPO           | git库地址，如果不需要push到库则不设置即可                        |
+| REMOTE             | remote名字，不传为origin                              |
+| BRANCH             | git分支名字，不传为main                                 |
+| DEFAULT_USER_EMAIL | git提交时用户名，不传为discovery-syncer-python@syncer.org |
+| DEFAULT_BASE_DIR   | git 库clone路径，默认为 syncer                         |
 
-3. 同步机制目前是基于定时轮询，效率比较低，有待优化，比如增加缓存开关，上游注册中心与缓存比对没有差异的情况下，不去拉取/变更下游网关的upstream信息，或者看看注册中心支不支持变动主动通知机制等。
+`job.json` 格式类似 https://github.com/anjia0532/discovery-syncer-python/blob/216e36bb3260640e7ca0c6e823344861507fb1fd/tools/backup.py#L117-L124
+
+如果用 docker 的话
+
+```bash
+echo '{}' > ./job.json
+docker run -e SYNC_JOB_JSON=job.json \
+        -e BRANCH=main \
+        -e REMOTE=origin \
+        -e GIT_REPO='git@github.com:anjia0532/discovery-syncer-python-demo.git' \
+        -e DEFAULT_USER_EMAIL='discovery-syncer-python@syncer.org'  \
+        -e DEFAULT_BASE_DIR='syncer'  \
+        -v $(pwd)/job.json:/opt/discovery-syncer/job.json  \
+        anjia0532/discovery-syncer-python-backup:v2.4.2
+```
+
+如果用命令行的话
+
+```bash
+wget https://raw.githubusercontent.com/anjia0532/discovery-syncer-python/master/tools/backup.py
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir --upgrade GitPython httpx
+
+# 安装 git 和 python3.11
+echo '{}' > ./job.json
+export SYNC_JOB_JSON=job.json
+python3 backup.py
+
+```
+
+### 还原
+
+```bash
+vi restore.py
+
+python3 restore.py
+```
 
 ## 新增服务发现或者网关插件
 
 ### 服务发现
 
-修改 [app.model.config.DiscoveryType](https://github.com/anjia0532/discovery-syncer-python/blob/f184e1b67ba0a5a47d2d895a2c22acfb46b61b5f/app/model/config.py#L14-L16) 新增类型,比如
+修改 [app.model.config.DiscoveryType](https://github.com/anjia0532/discovery-syncer-python/blob/f184e1b67ba0a5a47d2d895a2c22acfb46b61b5f/app/model/config.py#L14-L16)
+新增类型,比如
 
 ```python
 class DiscoveryType(Enum):
@@ -209,31 +252,32 @@ class Redis(Discovery):
 
 ```yaml
 discovery-servers:
-    redis1:
-        type: redis
-        weight: 100
-        prefix: 2
-        host: "redis://localhost:6379"
-        config:
-          demo: demo
+  redis1:
+    type: redis
+    weight: 100
+    prefix: 2
+    host: "redis://localhost:6379"
+    config:
+      demo: demo
 gateway-servers:
-    apisix1:
-        type: apisix
-        admin-url: http://apisix-server:9080
-        prefix: /apisix/admin/
-        config:
-            X-API-KEY: xxxxxxxx-xxxx-xxxxxxxxxxxx
-            version: v3
+  apisix1:
+    type: apisix
+    admin-url: http://apisix-server:9080
+    prefix: /apisix/admin/
+    config:
+      X-API-KEY: xxxxxxxx-xxxx-xxxxxxxxxxxx
+      version: v3
 targets:
-    -   discovery: redis
-        gateway: apisix1
-        enabled: false
-        # .. 忽略其他部分
+  - discovery: redis
+    gateway: apisix1
+    enabled: false
+    # .. 忽略其他部分
 ```
 
 ### 网关
 
-修改 [app.model.config.GatewayType](https://github.com/anjia0532/discovery-syncer-python/blob/f184e1b67ba0a5a47d2d895a2c22acfb46b61b5f/app/model/config.py#L19-L21) 新增类型,比如
+修改 [app.model.config.GatewayType](https://github.com/anjia0532/discovery-syncer-python/blob/f184e1b67ba0a5a47d2d895a2c22acfb46b61b5f/app/model/config.py#L19-L21)
+新增类型,比如
 
 ```python
 class GatewayType(Enum):
@@ -272,24 +316,32 @@ class SpringGateway(Gateway):
 
 ```yaml
 discovery-servers:
-    nacos1:
-        type: nacos
-        weight: 100
-        prefix: /nacos/v1/
-        host: "http://nacos-server:8858"
+  nacos1:
+    type: nacos
+    weight: 100
+    prefix: /nacos/v1/
+    host: "http://nacos-server:8858"
 gateway-servers:
-    spring_gateway1:
-        type: spring_gateway
-        admin-url: http://gateway-server:9080
-        prefix: /
-        config:
-            demo: xxxxxxxx-xxxx-xxxxxxxxxxxx
+  spring_gateway1:
+    type: spring_gateway
+    admin-url: http://gateway-server:9080
+    prefix: /
+    config:
+      demo: xxxxxxxx-xxxx-xxxxxxxxxxxx
 targets:
-    -   discovery: nacos1
-        gateway: spring_gateway1
-        enabled: false
-        # .. 忽略其他部分
+  - discovery: nacos1
+    gateway: spring_gateway1
+    enabled: false
+    # .. 忽略其他部分
 ```
+
+## 待优化点
+
+1. 已解决 ~~目前的同步任务是串行的，如果待同步的量比较大，或者同步时间窗口设置的特别小的情况下，会导致挤压~~
+
+2. 已解决 ~~不支持自定义同步插件，不利于自行扩展~~
+
+3. 同步机制目前是基于定时轮询，效率比较低，有待优化，比如增加缓存开关，上游注册中心与缓存比对没有差异的情况下，不去拉取/变更下游网关的upstream信息，或者看看注册中心支不支持变动主动通知机制等。
 
 Copyright and License
 ---

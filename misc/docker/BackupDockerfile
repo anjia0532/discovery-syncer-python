@@ -1,0 +1,22 @@
+##########################
+# Build the release image.
+FROM python:3.11-slim-bullseye
+LABEL MAINTAINER AnJia <anjia0532@gmail.com>
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/opt/discovery-syncer/
+ENV TZ=Asia/Shanghai
+
+WORKDIR /opt/discovery-syncer/
+
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir --upgrade GitPython httpx
+
+RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list && \
+  apt update && \
+  apt install -y git curl
+
+RUN git config --global http.sslVerify false
+
+ADD . /opt/discovery-syncer/
+
+ENTRYPOINT ["python3", "/opt/discovery-syncer/backup.py", ">/dev/stdout"]
