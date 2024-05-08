@@ -107,7 +107,7 @@ def check_file(file_path):
                 print(
                     f"\n\n下载 {syncer['syncer']}/gateway-api-to-file/{gateway} 到 {config_dir}/{syncer['base_name']} ,status_code={status_code}, status_msg={status_msg}")
                 script_file.write(f"""
-def restore_{job}_{gateway}():
+def restore_{job.replace("-","_")}_{gateway.replace("-","_")}():
     check_file("{job}/{gateway}/{syncer['base_name']}")
     with open("{job}/{gateway}/{syncer['base_name']}", 'r', encoding='UTF-8') as f:
         resp = httpx.put("{syncer['syncer']}/restore/{gateway}", content="\\n".join(f.readlines()),
@@ -132,7 +132,7 @@ if __name__ == '__main__':
             items = restore_job.split("_")
             script_file.write(f"""
     # 还原 {items[1]} 下的 {items[2]}
-    # {restore_job}
+    # {restore_job.replace("-","_")}
     """)
 
     print("执行 python restore.py 还原网关配置")

@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.4.2
+docker run anjia0532/discovery-syncer-python:v2.4.3
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -181,7 +181,7 @@ docker run -e SYNC_JOB_JSON=job.json \
         -e DEFAULT_USER_EMAIL='discovery-syncer-python@syncer.org'  \
         -e DEFAULT_BASE_DIR='syncer'  \
         -v $(pwd)/job.json:/opt/discovery-syncer/job.json  \
-        anjia0532/discovery-syncer-python-backup:v2.4.2
+        anjia0532/discovery-syncer-python-backup:v2.4.3
 ```
 
 如果用命令行的话

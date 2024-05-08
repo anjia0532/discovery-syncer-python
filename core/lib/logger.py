@@ -1,5 +1,5 @@
+import datetime
 import json
-import logging
 import logging
 import os
 import socket
@@ -125,15 +125,15 @@ class DingTalkHandler(logging.Handler):
                     f'此次离上次发送钉钉消息时间间隔不足 {self._time_interval} 秒，此次不发送这个钉钉内容： {record.msg}')
 
     def __emit(self, record):
-        data = (DING_TALK_MSG_TEMPLATE or self._msg_template) % record.__dict__
         try:
+            data = (DING_TALK_MSG_TEMPLATE or self._msg_template) % record.__dict__
+            data = data.replace("\\", "\\\\").replace("\\\\n", "\\n").replace("\"", "'")
             # 因为钉钉发送也是使用requests实现的，如果requests调用的urllib3命名空间也加上了钉钉日志，将会造成循环，程序卡住。一般情况是在根日志加了钉钉handler。
             self._remove_urllib_hanlder()
-            resp = requests.post(self._ding_talk_url + self.sign(),
-                                 json=json.loads(data.replace("\\", "\\\\").replace("\\\\n", "\\n")), timeout=(5, 5))
+            resp = requests.post(self._ding_talk_url + self.sign(), json=json.loads(data), timeout=(5, 5))
             very_nb_print(f'钉钉返回 : {resp.text}')
-        except requests.RequestException as e:
-            very_nb_print(f"发送消息给钉钉机器人失败 {e}")
+        except Exception as e:
+            very_nb_print(f"发送消息给钉钉机器人失败,原始消息: {record.msg} {e}")
 
     def __repr__(self):
         level = logging.getLevelName(self.level)
