@@ -159,6 +159,7 @@ class Apisix(Gateway):
                 item_val = vv.get("value", vv)
                 if item_val.get("status", 1) == 0:
                     continue
+                item_val.pop("update_time", None)
                 val[item.get("field")].append(item_val)
 
         yaml.SafeDumper.org_represent_str = yaml.SafeDumper.represent_str
