@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.4.4
+docker run anjia0532/discovery-syncer-python:v2.4.5
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -168,7 +168,8 @@ plugins: [ ]
 | DEFAULT_USER_EMAIL | git提交时用户名，不传为discovery-syncer-python@syncer.org |
 | DEFAULT_BASE_DIR   | git 库clone路径，默认为 syncer                         |
 
-`job.json` 格式类似 https://github.com/anjia0532/discovery-syncer-python/blob/216e36bb3260640e7ca0c6e823344861507fb1fd/tools/backup.py#L117-L124
+`job.json`
+格式类似 https://github.com/anjia0532/discovery-syncer-python/blob/216e36bb3260640e7ca0c6e823344861507fb1fd/tools/backup.py#L117-L124
 
 如果用 docker 的话
 
@@ -181,7 +182,7 @@ docker run -e SYNC_JOB_JSON=job.json \
         -e DEFAULT_USER_EMAIL='discovery-syncer-python@syncer.org'  \
         -e DEFAULT_BASE_DIR='syncer'  \
         -v $(pwd)/job.json:/opt/discovery-syncer/job.json  \
-        anjia0532/discovery-syncer-python-backup:v2.4.4
+        anjia0532/discovery-syncer-python-backup:v2.4.5
 ```
 
 如果用命令行的话

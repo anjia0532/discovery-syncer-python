@@ -5,6 +5,7 @@
 
 但最终配置方式是由get_logger_and_add_handlers方法的各种传参决定，如果方法相应的传参为None则使用这里面的配置。
 """
+import os
 
 """
 如果反对日志有各种彩色，可以设置 DEFAULUT_USE_COLOR_HANDLER = False
@@ -81,7 +82,10 @@ def get_host_ip():
         sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sc.connect(('8.8.8.8', 80))
         ip = sc.getsockname()[0]
-        host_name = socket.gethostname()
+        app_name = os.getenv("APP_NAME", '')
+        if app_name:
+            app_name = app_name + "_"
+        host_name = app_name + socket.gethostname()
         sc.close()
     except Exception:
         pass
@@ -151,8 +155,8 @@ NB_LOG_FORMATER_INDEX_FOR_CONSUMER_AND_PUBLISHER = FORMATTER_DICT[12]
 IS_ADD_DING_TALK_HANDLER = False
 DING_TALK_TOKEN = '3dd0eexxxxxadab014bd604XXXXXXXXXXXX'  # 钉钉报警机器人
 DING_TALK_SECRET = None  # 钉钉报警机器人签名
-TIME_INTERVAL = 0
-DING_TALK_MSG_TEMPLATE = r'{"msgtype":"markdown","markdown":{"title":"discovery-syncer-python","text":"**时间:** %(asctime)s\n\n**任务:** %(task_id)s\n\n**脚本:** %(pathname)s\n\n**函数:** %(funcName)s\n\n**行号:** %(lineno)s\n\n**信息:** %(msg)s"}}'
+TIME_INTERVAL = 60
+DING_TALK_MSG_TEMPLATE = f'{{"msgtype":"markdown","markdown":{{"title":"discovery-syncer-python","text":"**主机:** {computer_name}<br/>**时间:** %(asctime)s<br/>**任务:** %(task_id)s<br/>**脚本:** %(pathname)s<br/>**函数:** %(funcName)s<br/>**行号:** %(lineno)s<br/>**信息:** %(msg)s"}}}}'
 
 IS_ADD_ELASTIC_HANDLER = False
 ELASTIC_HOST = 'http://127.0.0.1:9200'

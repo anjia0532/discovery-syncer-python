@@ -7,9 +7,9 @@ from starlette.requests import Request
 from starlette.responses import Response, JSONResponse
 from starlette.types import ASGIApp
 
-from core.lib import logger
+from core.lib.logger import for_middleware
 
-LOGGER = logger.for_middleware(__name__)
+logger = for_middleware(__name__)
 
 
 async def log_request(request, call_next):
@@ -17,7 +17,7 @@ async def log_request(request, call_next):
     response = await call_next(request)
     end_time = time.time()
     process_time = round(end_time - start_time, 4)
-    LOGGER.info(f"URL:{request.url} 耗时：{process_time}s+++++++++++++")
+    logger.info(f"URL:{request.url} 耗时：{process_time}s+++++++++++++")
     return response
 
 
@@ -48,6 +48,7 @@ class SyncerApiKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         from app.model.config import settings as app_settings
         if request.headers.get("SYNCER-API-KEY", self.default_api_key) != app_settings.config.common.syncer_api_key:
+            logger.warning(f"未授权访问 Api Key: {request.headers.get('SYNCER-API-KEY', None)}")
             return Response(status_code=status.HTTP_401_UNAUTHORIZED)
 
         return await call_next(request)
@@ -61,7 +62,7 @@ class CostTimeHeaderMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         end_time = time.time()
         process_time = round(end_time - start_time, 4)
-        LOGGER.info(f"URL:{request.url} IP:{request.client.host} 耗时：{process_time}s")
+        logger.info(f"URL:{request.url} IP:{request.client.host} 耗时：{process_time}s")
         return response
 
 
@@ -72,7 +73,7 @@ class AllExceptionHandler(BaseHTTPMiddleware):
         try:
             responser = await call_next(request)
         except Exception as e:
-            LOGGER.error(f"全局异常拦截\nURL:{request.url}\nHeaders:{request.headers}\n{traceback.format_exc()}")
+            logger.error(f"全局异常拦截\nURL:{request.url}\nHeaders:{request.headers}\n{traceback.format_exc()}")
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={

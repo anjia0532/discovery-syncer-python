@@ -126,8 +126,9 @@ class DingTalkHandler(logging.Handler):
 
     def __emit(self, record):
         try:
+            record.msg = record.msg.replace("\\", "\\\\").replace("\\\\n", "\\n").replace("\"", "'")
+            record.pathname = record.pathname.replace("\\", "\\\\").replace("\\\\n", "\\n").replace("\"", "'")
             data = (DING_TALK_MSG_TEMPLATE or self._msg_template) % record.__dict__
-            data = data.replace("\\", "\\\\").replace("\\\\n", "\\n").replace("\"", "'")
             # 因为钉钉发送也是使用requests实现的，如果requests调用的urllib3命名空间也加上了钉钉日志，将会造成循环，程序卡住。一般情况是在根日志加了钉钉handler。
             self._remove_urllib_hanlder()
             resp = requests.post(self._ding_talk_url + self.sign(), json=json.loads(data), timeout=(5, 5))
