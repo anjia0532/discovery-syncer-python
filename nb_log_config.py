@@ -156,7 +156,7 @@ IS_ADD_DING_TALK_HANDLER = False
 DING_TALK_TOKEN = '3dd0eexxxxxadab014bd604XXXXXXXXXXXX'  # 钉钉报警机器人
 DING_TALK_SECRET = None  # 钉钉报警机器人签名
 TIME_INTERVAL = 60
-DING_TALK_MSG_TEMPLATE = f'{{"msgtype":"markdown","markdown":{{"title":"discovery-syncer-python","text":"**主机:** {computer_name}<br/>**时间:** %(asctime)s<br/>**任务:** %(task_id)s<br/>**脚本:** %(pathname)s<br/>**函数:** %(funcName)s<br/>**行号:** %(lineno)s<br/>**信息:** %(msg)s"}}}}'
+DING_TALK_MSG_TEMPLATE = f'{{"msgtype":"markdown","markdown":{{"title":"discovery-syncer-python","text":"**主机:** {computer_name}\\n\\n**时间:** %(asctime)s\\n\\n**任务:** %(task_id)s\\n\\n**脚本:** %(pathname)s\\n\\n**函数:** %(funcName)s\\n\\n**行号:** %(lineno)s\\n\\n**信息:** %(msg)s"}}}}'
 
 IS_ADD_ELASTIC_HANDLER = False
 ELASTIC_HOST = 'http://127.0.0.1:9200'
