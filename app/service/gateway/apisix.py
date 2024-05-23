@@ -210,10 +210,11 @@ class Apisix(Gateway):
             for val in resp.get("list"):
                 item_val = val.get("value", val)
                 item_id = item_val.get("id")
-                # item_val.pop("create_time", None)
-                # item_val.pop("update_time", None)
-                item_val.pop("validity_start", None)
-                item_val.pop("validity_end", None)
+                item_val.pop("create_time", None)
+                item_val.pop("update_time", None)
+                if "ssl" in alias_uri:
+                    item_val.pop("validity_start", None)
+                    item_val.pop("validity_end", None)
                 item_val = self.translate(target_gateway.VERSION, item_val)
                 t = Thread(target=target_gateway.apisix_execute,
                            args=("PUT", alias_uri + "/" + item_id, {}, json.dumps(item_val)))
@@ -233,8 +234,8 @@ class Apisix(Gateway):
                     plugin["_meta"] = {"disable": not plugin.get("enable", True)}
                     plugin.pop("enable", None)
                 # route.service_protocol -> route.upstream.scheme
-                "upstream" in data and data["upstream"].update({"scheme": data["service_protocol"]}) and data.pop(
-                    "service_protocol", None)
+                "upstream" in data and "service_protocol" in data and data["upstream"].update(
+                    {"scheme": data.pop("service_protocol", None)})
                 return data
             # v3 -> v2
             elif self.VERSION == APISIX_V3 and target_version == APISIX_V2:
