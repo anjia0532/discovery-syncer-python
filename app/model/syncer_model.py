@@ -1,15 +1,205 @@
+import itertools
+import json
+import logging
+import uuid
 from datetime import datetime
 from enum import Enum
 from typing import List, Dict
 
+import httpx
 from db_libs.sqla_lib import SqlaReflectHelper
+from httpx import TimeoutException
 from pydantic import BaseModel, Field
 from pydantic import model_validator, AliasChoices
-from sqlalchemy import Column, Integer, String, Boolean
+from sqlalchemy import Column, Integer, String, Boolean, and_, delete, text
 from sqlalchemy.dialects.sqlite import DATETIME
 from sqlalchemy.ext.declarative import declarative_base
 
+from app.model.config import HealthCheckType
+
 Base = declarative_base()
+
+SQL_UPDATE_INSTANCES = text("""
+update instances set  
+    successes= case when :failures+:timeouts>0 then 0 else successes+:successes end,
+    failures= case when :successes>0 then 0 else failures+:failures end,
+    timeouts= case when :successes>0 then 0 else timeouts+:timeouts end,
+    status= ifnull(:status,'unknown'), 
+    last_time=:last_time
+where id= :id
+""")
+
+SQL_SELECT_INSTANCES = text("""
+select *
+from instances
+where target_id = :target_id
+  and service = :service
+order by iif(status = 'unhealthy', 1, 0) asc, failures+timeouts asc
+limit ifnull(:skip,0),-1
+""")
+
+
+class DiscoveryInstance(Base):
+    __tablename__ = 'instances'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String, primary_key=True)
+    target_id = Column(String)
+    service = Column(String)
+    instance = Column(String)
+    successes = Column(Integer, default=0)
+    failures = Column(Integer, default=0)
+    timeouts = Column(Integer, default=0)
+    status = Column(String, default='unknown')
+    create_time = Column(DATETIME)
+    last_time = Column(DATETIME)
+
+    def __init__(self, item: {}):
+        self.id = item.get('id', None)
+        self.target_id = item.get('target_id', None)
+        self.service = item.get('service', None)
+        self.instance = item.get('instance', None)
+        self.successes = item.get('successes', 0)
+        self.failures = item.get('failures', 0)
+        self.timeouts = item.get('timeouts', 0)
+        self.status = item.get('status', 'unknown')
+        self.create_time = item.get('create_time', None)
+
+    def __getitem__(self, field):
+        return self.__dict__.get(field)
+
+    def __setitem__(self, k, v):
+        self.k = v
+
+    def to_dict(self):
+        return DiscoveryInstance(dict([(k, getattr(self, k)) for k in self.__dict__.keys() if not k.startswith("_")]))
+
+    def to_dict_item(self):
+        return dict([(k, getattr(self, k)) for k in self.__dict__.keys() if not k.startswith("_")])
+
+    def get_instances_by_target_id(self, target_id: str, sqla_helper: SqlaReflectHelper) -> List['DiscoveryInstance']:
+        with sqla_helper.session as ss:
+            instances = ss.query(DiscoveryInstance).filter(and_(DiscoveryInstance.target_id == target_id)).all()
+            if instances:
+                return [row.to_dict() for row in instances]
+            else:
+                return []
+
+    def health_check(self, healthcheck: dict, sqla_helper: SqlaReflectHelper):
+        success = False
+        params = {'id': self.id, "successes": 0, "failures": 0, "timeouts": 0, "status": self.status}
+        schema = ""
+        try:
+            if HealthCheckType.HTTP.value == healthcheck.get("type"):
+                schema = "http://"
+            elif HealthCheckType.HTTPS.value == healthcheck.get("type"):
+                schema = "https://"
+            assert len(schema) > 0, f"暂时不支持 {healthcheck.get('type')} 协议"
+            resp = httpx.request(method=healthcheck.get("method", "GET").upper(),
+                                 url=f"{schema}{self.instance}{healthcheck.get('uri')}",
+                                 timeout=healthcheck.get("timeout-sec", 30))
+            if resp.status_code in healthcheck.get("healthy", {}).get("http_statuses", []):
+                params['successes'] = 1
+                success = True
+            if resp.status_code in healthcheck.get("unhealthy", {}).get("http_statuses", []):
+                params['failures'] = 1
+        except TimeoutException as e:
+            params['timeouts'] = 1
+            logging.warning(f"健康检查 {schema}{self.instance}{healthcheck.get('uri')} 超时, {e.args}")
+        except Exception as e:
+            params['failures'] = 1
+            logging.warning(f"健康检查 {schema}{self.instance}{healthcheck.get('uri')} 失败, {e.args}")
+        params['last_time'] = datetime.now()
+        if success:
+            if self.successes + params['successes'] >= healthcheck.get("healthy", {}).get("successes", 1):
+                params['status'] = "healthy"
+        else:
+            if self.failures + params['failures'] >= healthcheck.get("unhealthy", {}).get("failures", 1):
+                params['status'] = "unhealthy"
+            if self.timeouts + params['timeouts'] >= healthcheck.get("unhealthy", {}).get("timeouts", 1):
+                params['status'] = "unhealthy"
+        self.set_counts(params, sqla_helper)
+        if params['status'] != self.status and healthcheck.get("alert", {}).get("url"):
+            instances = self.get_target_service_all_instance(0, sqla_helper)
+            keyfunc = lambda item: item['status']
+            group_dict = {k: [t.to_dict_item() for t in list(v)] for k, v in
+                          itertools.groupby(sorted(instances, key=keyfunc), keyfunc)}
+            logging.info(
+                f"{self.target_id} 下的服务: {self.service} 中的实例: {self.instance} 由 {self.status} 改为 {params['status']}")
+            body = self.to_dict_item()
+            if params['status'] == "unhealthy":
+                body['successes'] = 0
+                body['failures'] = params['failures'] + self.failures
+                body['timeouts'] = params['timeouts'] + self.timeouts
+            else:
+                body['successes'] = params['successes'] + self.successes
+                body['failures'] = 0
+                body['timeouts'] = 0
+            body['last_time'] = params['last_time']
+            body['new_status'] = params['status']
+            body['items'] = group_dict
+            try:
+                resp = httpx.request(healthcheck.get("alert", {}).get("method", "GET").upper(),
+                                     healthcheck.get("alert", {}).get("url"), params={"body": json.dumps(body)},
+                                     timeout=10)
+                logging.info(
+                    f"健康检查状态变更通知 {healthcheck.get('alert', {})} 结果为: {resp.text}, status_code: {resp.status_code}, headers: {resp.headers}")
+            except Exception as e:
+                logging.exception(f"健康检查状态变更通知 {healthcheck.get('alert', {})} 报错", exc_info=e)
+
+    def save_or_update(self, discovery_instances: ['Instance'], sqla_helper: SqlaReflectHelper):
+        with sqla_helper.session as ss:
+            instances = ss.query(DiscoveryInstance).filter(and_(DiscoveryInstance.target_id == self.target_id,
+                                                                DiscoveryInstance.service == self.service)).all()
+            if len(discovery_instances) == 0:
+                return instances
+            tmps = [f"{d.ip}:{d.port}" for d in discovery_instances if d.enabled]
+            ins = [d.instance for d in instances]
+
+            # 删除无效的
+            delete_instances = [d for d in ins if d not in tmps]
+            if delete_instances:
+                sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.in_(delete_instances))
+                ss.execute(sql)
+                ss.commit()
+            # 增加新增的
+            save_instances = [DiscoveryInstance(
+                {"id": self.id or str(uuid.uuid4()), "target_id": self.target_id, "service": self.service,
+                 "instance": d, "create_time": datetime.now()}) for d in tmps if d not in ins]
+            if save_instances:
+                ss.add_all(save_instances)
+                ss.commit()
+            return instances
+
+    def set_counts(self, params: {}, sqla_helper: SqlaReflectHelper):
+        with sqla_helper.session as ss:
+            ss.execute(SQL_UPDATE_INSTANCES, params)
+            ss.commit()
+
+    def get_target_service_all_instance(self, skip: 0, sqla_helper: SqlaReflectHelper) -> List['DiscoveryInstance']:
+        with sqla_helper.session as ss:
+            instances = ss.execute(SQL_SELECT_INSTANCES,
+                                   {"target_id": self.target_id, "service": self.service, "skip": skip}).all()
+            return [DiscoveryInstance(row._asdict()) for row in instances]
+
+    @staticmethod
+    def create_table_if_not_exists(sqla_helper: SqlaReflectHelper):
+        Base.metadata.drop_all(sqla_helper.engine)
+        Base.metadata.create_all(sqla_helper.engine)
+
+    @staticmethod
+    def query_all(sqla_helper: SqlaReflectHelper) -> List['DiscoveryInstance']:
+        with sqla_helper.session as ss:
+            ss.expire_on_commit = False
+            result = ss.query(DiscoveryInstance).all()
+            ss.commit()
+            return result
+
+    @staticmethod
+    def clear_all(sqla_helper: SqlaReflectHelper):
+        with sqla_helper.session as ss:
+            ss.query(DiscoveryInstance).delete()
+            ss.commit()
 
 
 class Jobs(Base):

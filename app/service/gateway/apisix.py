@@ -192,6 +192,7 @@ class Apisix(Gateway):
                 t = Thread(target=self.apisix_execute,
                            args=("PUT", uri + "/" + val.get("id", val.get("name")), {}, json.dumps(val)))
                 t.start()
+                threads.append(t)
         for t in threads:
             t.join()
 
@@ -219,6 +220,7 @@ class Apisix(Gateway):
                 t = Thread(target=target_gateway.apisix_execute,
                            args=("PUT", alias_uri + "/" + item_id, {}, json.dumps(item_val)))
                 t.start()
+                threads.append(t)
             for t in threads:
                 t.join()
 

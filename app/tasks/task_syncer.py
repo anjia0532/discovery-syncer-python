@@ -2,12 +2,13 @@ import datetime
 import functools
 import importlib
 import re
+from threading import Thread
 
 from apscheduler.triggers.cron import CronTrigger
 from funboost import boost, funboost_aps_scheduler
 from nb_time import NbTime
 
-from app.model.syncer_model import Jobs
+from app.model.syncer_model import Jobs, DiscoveryInstance, Registration
 from app.service.discovery.discovery import Discovery
 from app.service.gateway.gateway import Gateway
 from app.tasks.common import FunboostCommonConfig
@@ -65,6 +66,26 @@ def clear_client():
     Jobs.clear_all(sqla_helper)
 
 
+@boost(boost_params=FunboostCommonConfig(queue_name='queue_health_check_job', qps=50, ))
+def health_check(target: dict):
+    logger.info(f"health check {target}")
+    healthcheck = target.get("healthcheck", None)
+    target_id = target.get("id", None)
+    if not target_id or not healthcheck:
+        return
+    sqla_helper = db.get_sqla_helper()[1]
+    instances = DiscoveryInstance({}).get_instances_by_target_id(target_id, sqla_helper)
+    if not instances:
+        return
+    threads = []
+    for instance in instances:
+        t = Thread(target=instance.health_check, args=(healthcheck, sqla_helper))
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+
 @boost(boost_params=FunboostCommonConfig(queue_name='queue_syncer_job', qps=50, ))
 def syncer(target: dict):
     """
@@ -97,6 +118,34 @@ def syncer(target: dict):
         logger.info(
             f"同步服务实例, 作业: {target.get('id')}, service_name: {service.name}, 最后更新时间为: {NbTime(service.last_time).datetime_str} ,instances: {discovery_instances}")
 
+        sqla_helper = db.get_sqla_helper()[1]
+        healthcheck = target.get("healthcheck", {})
+        if healthcheck:
+            try:
+                DiscoveryInstance({"target_id": target.get('id'), "service": service.name}).save_or_update(
+                    discovery_instances, sqla_helper)
+                # 拿到 discovery_instances 和 health_check 里的 unhealthy 比较，将 discovery 的下掉，保留 >= min-hosts
+                instances = DiscoveryInstance(
+                    {"target_id": target.get('id'), "service": service.name}).get_target_service_all_instance(
+                    healthcheck.get("min-hosts", 1), sqla_helper)
+                unhealthy = [d for d in instances if d.status == "unhealthy"]
+                # 总节点-不健康节点>最小检查数(要保留的节点数)
+                if unhealthy:
+                    # 移除 discovery_instances 中 unhealthy 实例
+                    unhealthy_instances = [d for d in discovery_instances if
+                                           f"{d.ip}:{d.port}" in [b.instance for b in unhealthy]]
+                    discovery_instances = [d for d in discovery_instances if
+                                           f"{d.ip}:{d.port}" not in [b.instance for b in unhealthy]]
+                    if unhealthy_instances:
+                        for unhealthy_instance in unhealthy_instances:
+                            unhealthy_instance.change = True
+                            unhealthy_instance.enabled = False
+                        # 下线 unhealthy 实例
+                        registration = Registration(service_name=service.name, ext_data=target.get("config", {}))
+                        discovery_client.modify_registration(registration, unhealthy_instances)
+            except Exception as e:
+                logger.warning(f"健康检查下线实例失败, {target.get('id', None)} , {service.name}", exc_info=e)
+
         gateway_instances = gateway_client.get_service_all_instances(target, service.name)
         logger.info(
             f"网关实例列表, 作业: {target.get('id')}, service_name: {service.name}, instances: {gateway_instances}")
@@ -115,7 +164,7 @@ def syncer(target: dict):
             logger.info(f"没有变更实例,跳过更新, 作业: {target.get('id')}, service_name: {service.name}")
             continue
         gateway_client.sync_instances(target, service.name, diffIns, discovery_instances)
-        Jobs(**target).save_or_update(db.get_sqla_helper()[1])
+        Jobs(**target).save_or_update(sqla_helper)
 
 
 @boost(boost_params=FunboostCommonConfig(queue_name='queue_reload_job', qps=1, ))
@@ -124,7 +173,6 @@ def reload():
     from app.model.config import settings, discovery_clients, gateway_clients
     clear_client()
     # key 为 name，value 为 discovery client
-
     if settings.config.discovery_servers:
         for name, discovery in settings.config.discovery_servers.items():
             cls = getattr(importlib.import_module(f"app.service.discovery.{discovery.type.value}"),
@@ -146,12 +194,21 @@ def reload():
             if target.enabled:
                 second, minute, hour, day, month, day_of_week, next_run_time = time_parser(target.fetch_interval)
                 Jobs(**target.dict()).save_or_update(sqla_helper)
+                # 注册定时任务
                 if next_run_time:
                     funboost_aps_scheduler.add_push_job(syncer, id=target.id, name=target.id,
                                                         next_run_time=next_run_time,
                                                         kwargs={"target": target.model_dump()}, replace_existing=True)
                 else:
                     funboost_aps_scheduler.add_push_job(syncer, id=target.id, name=target.id,
+                                                        trigger=CronTrigger(second=second, minute=minute, hour=hour,
+                                                                            day=day, month=month,
+                                                                            day_of_week=day_of_week),
+                                                        kwargs={"target": target.model_dump()}, replace_existing=True)
+                # 健康检查
+                if target.healthcheck:
+                    funboost_aps_scheduler.add_push_job(health_check, id="health-check",
+                                                        name="health-check",
                                                         trigger=CronTrigger(second=second, minute=minute, hour=hour,
                                                                             day=day, month=month,
                                                                             day_of_week=day_of_week),

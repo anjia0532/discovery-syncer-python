@@ -11,6 +11,16 @@ from core.lib.logger import for_model
 logger = for_model(__name__)
 
 
+class HealthCheckMethod(Enum):
+    GET = "GET"
+    POST = "POST"
+
+
+class HealthCheckType(Enum):
+    HTTP = "http"
+    HTTPS = "https"
+
+
 class DiscoveryType(Enum):
     NACOS = "nacos"
     EUREKA = "eureka"
@@ -60,6 +70,30 @@ class Gateway(BaseModel):
         return self
 
 
+class HealthCheck(BaseModel):
+    type: HealthCheckType = HealthCheckType.HTTP
+    uri: str = "/"
+    timeout_sec: int = Field(5, alias="timeout-sec")
+    interval: str = None
+    min_hosts: int = Field(1, alias="min-hosts")
+    method: HealthCheckMethod = HealthCheckMethod.GET
+    healthy: dict = {}
+    unhealthy: dict = {}
+    alert: dict = {}
+
+    @model_validator(mode='after')
+    def health_check(self) -> 'HealthCheck':
+        assert self.type is not None, "type 必填，访问方式: http,https"
+        assert self.timeout_sec > 0, "timeout-sec 必填，超时时间，单位秒，默认5秒"
+        assert len(self.interval) > 0, "interval 必填，检查定时表达式"
+        assert self.min_hosts > 0, "min-hosts 必填，最小可用节点数，如果低于等于，不会下线节点"
+        assert len(self.healthy.get("http_statuses", [])) > 0, "healthy.http_statuses 必填，健康 http 状态码集合"
+        assert self.healthy.get("successes", 0) > 0, "healthy.successes 必填，确定节点健康的次数"
+        assert len(self.unhealthy.get("http_statuses", [])) > 0, "healthy.http_statuses 必填，不健康 http 状态码集合"
+        assert self.unhealthy.get("failures", 0) > 0, "unhealthy.failures 必填，确定节点非健康的次数"
+        return self
+
+
 class Targets(BaseModel):
     id: str = None
     discovery: str = None
@@ -71,6 +105,7 @@ class Targets(BaseModel):
     fetch_interval: str = Field("0 0 * * * *", alias="fetch-interval")
     maximum_interval_sec: int = Field(-1, alias="maximum-interval-sec")
     config: dict = {}
+    healthcheck: dict = None
 
     @model_validator(mode='after')
     def check_targets(self) -> 'Targets':

@@ -60,7 +60,41 @@ targets:
                     "type":"roundrobin",
                     "desc": "auto sync by https://github.com/anjia0532/discovery-syncer-python"
                 }
-
+        # 主动健康检查
+        healthcheck:
+              # 目前仅支持 http/https
+              type: http
+              # http[s]://ip:port+uri
+              uri: /
+              # 主动健康检查超时时间，不设置默认30秒，单位是秒，正整数
+              timeout-sec: 10
+              # 定时作业间隔
+              interval: "@every 10s"
+              # 保留节点数，不设置默认保留1个，假设一个service有3个节点，min-hosts设置的是3，即使都不健康，也不会去注册中心下线实例
+              # 如果一个service有3个节点，min-hosts设置的是2，假设都不健康，则会下线1个实例，保留2个
+              min-hosts: 3
+              # 健康检查http方法，默认是GET
+              method: GET
+              # 健康断言 实例状态默认是 unknown
+              healthy:
+                # 如果健康检查 访问 http[s]://ip:port+uri，在timeout超时之前，返回了 http_statuses 指定的状态码，则视为健康节点
+                http_statuses: [200]
+                # successes 默认是1 ，连续成功超过 successes 次，此节点视为是 healthy, 默认是 unknown
+                successes: 1
+              # 不健康断言
+              unhealthy:
+                # 如果健康检查 访问 http[s]://ip:port+uri，超时了则 timeouts 计数增加，未超时正常返回了，检查 http_status ,是否命中 http_statuses
+                http_statuses: [404,500,502,503,504]
+                # failures 默认是1 ，连续失败超过 failures 次，此节点视为 unhealthy (failures或timeouts任一超过，均视为 unhealthy)
+                failures: 1
+                # timeouts 默认是1 ，连续失败超过 timeouts 次，此节点视为 unhealthy (failures或timeouts任一超过，均视为 unhealthy)
+                timeouts: 1
+              # 状态发生变更时 unknown-> healthy,unknown->unhealthy,healthy->unhealthy,unhealthy->healthy
+              # 会向 alert.url 推送 webhook,url query参数，key是body，值是jsonobject(类似 {"id":"a848ce01-7891-44f0-9f26-5ede6c9f6211","target_id":"0-apisix-nacos","service":"demo","instance":"10.42.0.98:8085","successes":0,"failures":0,"timeouts":1,"status":"unknown","create_time":"2024-06-26 10:13:49","last_time":"2024-06-26 10:13:58","new_status":"unhealthy","items":{"unhealthy":[{"id":"a848ce01-7891-44f0-9f26-5ede6c9f6211","target_id":"0-apisix-nacos","service":"demo","instance":"10.42.0.98:8085","successes":0,"failures":0,"timeouts":1,"status":"unhealthy","create_time":"2024-06-26 10:13:49.084153"}]}})
+              # 如果 alert.url 不配置，则不会推送，也不会报错，method 默认是 GET
+              alert:
+                url: ""
+                method: ""
     -   discovery: eureka1
         gateway: apisix1
         enabled: false
