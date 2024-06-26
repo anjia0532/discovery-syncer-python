@@ -68,7 +68,6 @@ def clear_client():
 
 @boost(boost_params=FunboostCommonConfig(queue_name='queue_health_check_job', qps=50, ))
 def health_check(target: dict):
-    logger.info(f"health check {target}")
     healthcheck = target.get("healthcheck", None)
     target_id = target.get("id", None)
     if not target_id or not healthcheck:
@@ -84,7 +83,7 @@ def health_check(target: dict):
         threads.append(t)
     for t in threads:
         t.join()
-
+    logger.info(f"健康检查完成, target: {target}")
 
 @boost(boost_params=FunboostCommonConfig(queue_name='queue_syncer_job', qps=50, ))
 def syncer(target: dict):

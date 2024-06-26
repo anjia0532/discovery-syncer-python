@@ -1,6 +1,5 @@
 import itertools
 import json
-import logging
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -16,17 +15,20 @@ from sqlalchemy.dialects.sqlite import DATETIME
 from sqlalchemy.ext.declarative import declarative_base
 
 from app.model.config import HealthCheckType
+from core.lib.logger import for_model
+
+logger = for_model(__name__)
 
 Base = declarative_base()
 
 SQL_UPDATE_INSTANCES = text("""
-update instances set  
-    successes= case when :failures+:timeouts>0 then 0 else successes+:successes end,
-    failures= case when :successes>0 then 0 else failures+:failures end,
-    timeouts= case when :successes>0 then 0 else timeouts+:timeouts end,
-    status= ifnull(:status,'unknown'), 
+update instances
+set successes= min(case when :failures + :timeouts > 0 then 0 else successes + :successes end, 256),
+    failures= min(case when :successes > 0 then 0 else failures + :failures end, 256),
+    timeouts= min(case when :successes > 0 then 0 else timeouts + :timeouts end, 256),
+    status= ifnull(:status, 'unknown'),
     last_time=:last_time
-where id= :id
+where id = :id
 """)
 
 SQL_SELECT_INSTANCES = text("""
@@ -34,8 +36,8 @@ select *
 from instances
 where target_id = :target_id
   and service = :service
-order by iif(status = 'unhealthy', 1, 0) asc, failures+timeouts asc
-limit ifnull(:skip,0),-1
+order by iif(status = 'unhealthy', 1, 0) asc, failures + timeouts asc, successes desc
+limit ifnull(:skip, 0),-1
 """)
 
 
@@ -105,10 +107,10 @@ class DiscoveryInstance(Base):
                 params['failures'] = 1
         except TimeoutException as e:
             params['timeouts'] = 1
-            logging.warning(f"健康检查 {schema}{self.instance}{healthcheck.get('uri')} 超时, {e.args}")
+            logger.warning(f"健康检查 {schema}{self.instance}{healthcheck.get('uri')} 超时, {e.args}")
         except Exception as e:
             params['failures'] = 1
-            logging.warning(f"健康检查 {schema}{self.instance}{healthcheck.get('uri')} 失败, {e.args}")
+            logger.warning(f"健康检查 {schema}{self.instance}{healthcheck.get('uri')} 失败, {e.args}")
         params['last_time'] = datetime.now()
         if success:
             if self.successes + params['successes'] >= healthcheck.get("healthy", {}).get("successes", 1):
@@ -124,7 +126,7 @@ class DiscoveryInstance(Base):
             keyfunc = lambda item: item['status']
             group_dict = {k: [t.to_dict_item() for t in list(v)] for k, v in
                           itertools.groupby(sorted(instances, key=keyfunc), keyfunc)}
-            logging.info(
+            logger.info(
                 f"{self.target_id} 下的服务: {self.service} 中的实例: {self.instance} 由 {self.status} 改为 {params['status']}")
             body = self.to_dict_item()
             if params['status'] == "unhealthy":
@@ -139,13 +141,12 @@ class DiscoveryInstance(Base):
             body['new_status'] = params['status']
             body['items'] = group_dict
             try:
-                resp = httpx.request(healthcheck.get("alert", {}).get("method", "GET").upper(),
-                                     healthcheck.get("alert", {}).get("url"), params={"body": json.dumps(body)},
-                                     timeout=10)
-                logging.info(
+                resp = httpx.request(method=healthcheck.get("alert", {}).get("method", "GET").upper(), timeout=10,
+                                     url=healthcheck.get("alert", {}).get("url"), params={"body": json.dumps(body)})
+                logger.info(
                     f"健康检查状态变更通知 {healthcheck.get('alert', {})} 结果为: {resp.text}, status_code: {resp.status_code}, headers: {resp.headers}")
             except Exception as e:
-                logging.exception(f"健康检查状态变更通知 {healthcheck.get('alert', {})} 报错", exc_info=e)
+                logger.exception(f"健康检查状态变更通知 {healthcheck.get('alert', {})} 报错", exc_info=e)
 
     def save_or_update(self, discovery_instances: ['Instance'], sqla_helper: SqlaReflectHelper):
         with sqla_helper.session as ss:
