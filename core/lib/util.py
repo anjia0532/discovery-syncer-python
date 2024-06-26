@@ -9,7 +9,6 @@ from typing import Any, Tuple, Optional
 
 T = typing.TypeVar('T')
 
-
 # global encoding
 ENCODING = 'utf-8'
 
@@ -53,3 +52,16 @@ def pfmt(o: Any, *args, **kwargs) -> str:
     :return: object string
     """
     return pprint.pformat(o, *args, **kwargs)
+
+
+def http_status_in_array(status: int, arr: []) -> bool:
+    """
+    check if http status is in array
+    :param status: http status code
+    :param arr: array of status codes
+    :return: if status is in array
+    """
+    if not arr:
+        return False
+    status_str = str(status)[0:1] + "xx"
+    return status in arr or status_str in arr or status_str.upper() in arr

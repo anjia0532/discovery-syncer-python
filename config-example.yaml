@@ -76,6 +76,10 @@ targets:
               # 健康检查http方法，默认是GET
               method: GET
               # 健康断言 实例状态默认是 unknown
+              # 特别的 相同百位数的状态码，可以缩写成 xx，比如 1xx[100-199], 2xx[200-299], 3xx[300-399], 4xx[400-499], 5xx[500-599]
+              # 健康检查返回的状态码同时满足 healthy.http_statuses 和 unhealthy.http_statuses 交集 status，则认为是健康节点
+              # 比如 http_status 是 401，healthy.http_statuses 是['4xx'], unhealthy.http_statuses 是[401]，则认为是健康节点
+              # 比如 http_status 是 401，healthy.http_statuses 是[400], unhealthy.http_statuses 是['4xx']，则认为是不健康节点
               healthy:
                 # 如果健康检查 访问 http[s]://ip:port+uri，在timeout超时之前，返回了 http_statuses 指定的状态码，则视为健康节点
                 http_statuses: [200]

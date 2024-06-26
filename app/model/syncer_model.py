@@ -16,6 +16,7 @@ from sqlalchemy.ext.declarative import declarative_base
 
 from app.model.config import HealthCheckType
 from core.lib.logger import for_model
+from core.lib.util import http_status_in_array
 
 logger = for_model(__name__)
 
@@ -100,10 +101,10 @@ class DiscoveryInstance(Base):
             resp = httpx.request(method=healthcheck.get("method", "GET").upper(),
                                  url=f"{schema}{self.instance}{healthcheck.get('uri')}",
                                  timeout=healthcheck.get("timeout-sec", 30))
-            if resp.status_code in healthcheck.get("healthy", {}).get("http_statuses", []):
+            if http_status_in_array(resp.status_code, healthcheck.get("healthy", {}).get("http_statuses", [])):
                 params['successes'] = 1
                 success = True
-            if resp.status_code in healthcheck.get("unhealthy", {}).get("http_statuses", []):
+            elif http_status_in_array(resp.status_code, healthcheck.get("unhealthy", {}).get("http_statuses", [])):
                 params['failures'] = 1
         except TimeoutException as e:
             params['timeouts'] = 1
