@@ -20,12 +20,14 @@ logger = for_handler(__name__)
 @router.put("/discovery/{discovery_name}", summary="主动下线上线注册中心的服务",
             description="主动下线上线注册中心的服务<br/>配合CI/CD发版业务用")
 def discovery(discovery_name: Annotated[str, Path(title="discovery_name", description="注册中心名称")],
-              registration: Annotated[Registration, Body(title="Registration", description="入参")]):
+              registration: Annotated[Registration, Body(title="Registration", description="入参")],
+              alive_num: Annotated[int, Query(title="alive_num", description="最少存活实例数")] = 1):
     """
     主动下线上线注册中心的服务,配合CI/CD发版业务用
-    @rtype: str
     @param discovery_name: 注册中心名称
+    @param alive_num: 最少存活实例数，默认1，如果小于等于0，则不限制，如果大于0，则执行上下线操作时需要满足最少存活实例数，否则会抛异常
     @param registration: 服务上下线信息
+    @rtype: str 成功返回 OK
     @return: 成功返回 OK
     """
     try:
@@ -45,7 +47,6 @@ def discovery(discovery_name: Annotated[str, Path(title="discovery_name", descri
                     if registration.other_status != RegistrationStatus.ORIGIN:
                         instance.enabled = registration.other_status == RegistrationStatus.UP
                         instance.change = True
-                    continue
             elif registration.type == RegistrationType.IP:
                 val = instance.ip
             if re.match(registration.regexp_str or '', val):
@@ -57,6 +58,14 @@ def discovery(discovery_name: Annotated[str, Path(title="discovery_name", descri
                     instance.change = True
             if instance.change:
                 instances.append(instance)
+        # 限制最少存活实例数
+        if alive_num > 0:
+            down_hosts = [f"{instance.ip}:{instance.port}" for instance in discovery_instances if
+                          instance.change and not instance.enabled]
+            alive_hosts = [f"{instance.ip}:{instance.port}" for instance in discovery_instances if instance.enabled]
+            if len(alive_hosts) < alive_num:
+                raise Exception(
+                    f"最少存活实例数{alive_num}不满足，总实例数(含之前已下线数量){len(discovery_instances)}，要下线实例数{len(down_hosts)}，剩余在线实例数{len(alive_hosts)}")
         discovery_client.modify_registration(registration, instances=instances)
     except Exception as e:
         logger.error(f"主动下线上线注册中心的服务失败,discovery_name {discovery_name},registration {registration}",
