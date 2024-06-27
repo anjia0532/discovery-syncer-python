@@ -73,6 +73,7 @@ docker run anjia0532/discovery-syncer-python:v2.6.0
 #### `PUT /discovery/{discovery-name}?alive_num=1` 主动下线上线注册中心的服务,配合CI/CD发版业务用
 
 `discovery-name` 是注册中心的名字，如果不存在，则返回 `Not Found` http status code 是404
+
 `alive_num` 是执行上下线操作后，断言存活实例数量，小于等于0则不判断，不传默认1，不满足则报错，http status code 是500, content 类似 `('最少存活实例数1不满足，总实例数(含之前已下线数量)2，要下线实例数2，剩余在线实例数0',)`
 
 body入参
