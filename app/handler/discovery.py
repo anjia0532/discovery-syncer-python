@@ -41,21 +41,24 @@ def discovery(discovery_name: Annotated[str, Path(title="discovery_name", descri
         instances = []
         for instance in discovery_instances:
             val = ""
+            change = instance.enabled
             if registration.type == RegistrationType.METADATA:
                 val = instance.metadata.get(registration.metadata_key, "")
+                # 为了防止 metadata_key 为空，导致所有实例都下线，这里做个特殊处理
                 if len(val) == 0:
                     if registration.other_status != RegistrationStatus.ORIGIN:
                         instance.enabled = registration.other_status == RegistrationStatus.UP
-                        instance.change = True
+                        instance.change = change != instance.enabled
+                    continue
             elif registration.type == RegistrationType.IP:
                 val = instance.ip
+
             if re.match(registration.regexp_str or '', val):
                 instance.enabled = registration.status == RegistrationStatus.UP
-                instance.change = True
             else:
                 if registration.other_status != RegistrationStatus.ORIGIN:
                     instance.enabled = registration.other_status == RegistrationStatus.UP
-                    instance.change = True
+            instance.change = change != instance.enabled
             if instance.change:
                 instances.append(instance)
         # 限制最少存活实例数
