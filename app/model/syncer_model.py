@@ -108,10 +108,10 @@ class DiscoveryInstance(Base):
                 params['failures'] = 1
         except TimeoutException as e:
             params['timeouts'] = 1
-            logger.warning(f"健康检查 {schema}{self.instance}{healthcheck.get('uri')} 超时, {e.args}")
+            logger.warning(f"健康检查 {self.target_id} {self.service} {schema}{self.instance}{healthcheck.get('uri')} 超时, {e.args}")
         except Exception as e:
             params['failures'] = 1
-            logger.warning(f"健康检查 {schema}{self.instance}{healthcheck.get('uri')} 失败, {e.args}")
+            logger.warning(f"健康检查 {self.target_id} {self.service} {schema}{self.instance}{healthcheck.get('uri')} 失败, {e.args}")
         params['last_time'] = datetime.now()
         if success:
             if self.successes + params['successes'] >= healthcheck.get("healthy", {}).get("successes", 1):
@@ -145,7 +145,7 @@ class DiscoveryInstance(Base):
                 resp = httpx.request(method=healthcheck.get("alert", {}).get("method", "GET").upper(), timeout=10,
                                      url=healthcheck.get("alert", {}).get("url"), params={"body": json.dumps(body)})
                 logger.info(
-                    f"健康检查状态变更通知 {healthcheck.get('alert', {})} 结果为: {resp.text}, status_code: {resp.status_code}, headers: {resp.headers}")
+                    f"健康检查状态变更通知 参数为: {json.dumps(body)} {healthcheck.get('alert', {})} 结果为: {resp.text}, status_code: {resp.status_code}, headers: {resp.headers}")
             except Exception as e:
                 logger.exception(f"健康检查状态变更通知 {healthcheck.get('alert', {})} 报错", exc_info=e)
 
