@@ -122,6 +122,9 @@ class DiscoveryInstance(Base):
             if self.timeouts + params['timeouts'] >= healthcheck.get("unhealthy", {}).get("timeouts", 1):
                 params['status'] = "unhealthy"
         self.set_counts(params, sqla_helper)
+        if not success:
+            instances = self.get_target_service_all_instance(0, sqla_helper)
+            logger.warning(f"健康检查 {self.target_id} {self.service} {schema}{self.instance}{healthcheck.get('uri')} , 实例状态: {json.dumps([d.to_dict_item() for d in instances])}")
         if params['status'] != self.status and healthcheck.get("alert", {}).get("url"):
             instances = self.get_target_service_all_instance(0, sqla_helper)
             keyfunc = lambda item: item['status']
@@ -154,6 +157,12 @@ class DiscoveryInstance(Base):
             instances = ss.query(DiscoveryInstance).filter(and_(DiscoveryInstance.target_id == self.target_id,
                                                                 DiscoveryInstance.service == self.service)).all()
             if len(discovery_instances) == 0:
+                if len(instances) > 0:
+                    delete_instances = [d.instance for d in instances]
+                    logger.info(f"删除无效的实例: {json.dumps(delete_instances)}")
+                    sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.in_(delete_instances))
+                    ss.execute(sql)
+                    ss.commit()
                 return instances
             tmps = [f"{d.ip}:{d.port}" for d in discovery_instances if d.enabled]
             ins = [d.instance for d in instances]
@@ -161,6 +170,7 @@ class DiscoveryInstance(Base):
             # 删除无效的
             delete_instances = [d for d in ins if d not in tmps]
             if delete_instances:
+                logger.info(f"删除无效的实例: {json.dumps(delete_instances)}")
                 sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.in_(delete_instances))
                 ss.execute(sql)
                 ss.commit()
@@ -169,6 +179,7 @@ class DiscoveryInstance(Base):
                 {"id": self.id or str(uuid.uuid4()), "target_id": self.target_id, "service": self.service,
                  "instance": d, "create_time": datetime.now()}) for d in tmps if d not in ins]
             if save_instances:
+                logger.info(f"新增的实例: {json.dumps([d.to_dict_item() for d in save_instances])}")
                 ss.add_all(save_instances)
                 ss.commit()
             return instances

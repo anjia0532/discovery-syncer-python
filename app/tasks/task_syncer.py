@@ -85,6 +85,7 @@ def health_check(target: dict):
         t.join()
     logger.info(f"健康检查完成, target: {target}")
 
+
 @boost(boost_params=FunboostCommonConfig(queue_name='queue_syncer_job', qps=50, ))
 def syncer(target: dict):
     """
