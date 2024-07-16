@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.6.3
+docker run anjia0532/discovery-syncer-python:v2.6.4
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -345,6 +345,14 @@ targets:
 2. 已解决 ~~不支持自定义同步插件，不利于自行扩展~~
 
 3. 同步机制目前是基于定时轮询，效率比较低，有待优化，比如增加缓存开关，上游注册中心与缓存比对没有差异的情况下，不去拉取/变更下游网关的upstream信息，或者看看注册中心支不支持变动主动通知机制等。
+
+## 鸣谢
+- [funboost -- python万能分布式函数调度框架](https://github.com/ydf0509/funboost)
+- [apisix -- 云原生Api网关](https://github.com/apache/apisix)
+- [kong -- 云原生Api网关](https://github.com/Kong/kong)
+- [nacos -- 一个更易于构建云原生应用的动态服务发现、配置管理和服务管理平台](https://github.com/alibaba/nacos)
+- [eureka -- 中间层服务器的发现、负载平衡和故障转移](https://github.com/Netflix/eureka)
+- [discovery-syncer -- 我之前用golang写的多端注册中心网关同步工具](https://github.com/anjia0532/discovery-syncer)
 
 Copyright and License
 ---

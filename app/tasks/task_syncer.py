@@ -2,10 +2,9 @@ import datetime
 import functools
 import importlib
 import re
-from threading import Thread
 
 from apscheduler.triggers.cron import CronTrigger
-from funboost import boost, funboost_aps_scheduler
+from funboost import boost, funboost_aps_scheduler, funboost_current_task
 from nb_time import NbTime
 
 from app.model.syncer_model import Jobs, DiscoveryInstance, Registration
@@ -66,6 +65,17 @@ def clear_client():
     Jobs.clear_all(sqla_helper)
 
 
+@boost(boost_params=FunboostCommonConfig(queue_name='queue_instance_health_check', qps=100))
+def instance_health_check(target: dict, instance: dict):
+    sqla_helper = db.get_sqla_helper()[1]
+    healthcheck = target.get("healthcheck", None)
+    discovery_instance = DiscoveryInstance(instance)
+    try:
+        discovery_instance.health_check(healthcheck=healthcheck, sqla_helper=sqla_helper)
+    except Exception as e:
+        logger.warning(f"健康检查报错 {e.args}")
+
+
 @boost(boost_params=FunboostCommonConfig(queue_name='queue_health_check_job', qps=50, ))
 def health_check(target: dict):
     healthcheck = target.get("healthcheck", None)
@@ -76,14 +86,10 @@ def health_check(target: dict):
     instances = DiscoveryInstance({}).get_instances_by_target_id(target_id, sqla_helper)
     if not instances:
         return
-    threads = []
+    fct = funboost_current_task()
     for instance in instances:
-        t = Thread(target=instance.health_check, args=(healthcheck, sqla_helper))
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join()
-    logger.info(f"健康检查完成, target: {target}")
+        instance_health_check.publish({'target': target, 'instance': instance.to_dict_item()},
+                                      task_id=fct.function_result_status.task_id)
 
 
 @boost(boost_params=FunboostCommonConfig(queue_name='queue_syncer_job', qps=50, ))

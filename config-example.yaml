@@ -45,6 +45,8 @@ targets:
         maximum-interval-sec: 20 # now - last > ${maximum-interval-sec}sec is lost
         upstream-prefix: test
         name: test
+        # 排除指定服务(支持正则)
+        exclude-service: []
         config:
             groupName: DEFAULT_GROUP
             namespaceId: test
