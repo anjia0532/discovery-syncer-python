@@ -128,43 +128,32 @@ class DiscoveryInstance(Base):
             instances = self.get_target_service_all_instance(0, sqla_helper)
             logger.warning(
                 f"健康检查 {self.target_id} {self.service} {schema}{self.instance}{healthcheck.get('uri')} , 实例状态: {json.dumps([d.to_dict_item() for d in instances])}")
-        if params['status'] != self.status:
-            if healthcheck.get("alert", {}).get("url"):
-                instances = self.get_target_service_all_instance(0, sqla_helper)
-                keyfunc = lambda item: item['status']
-                group_dict = {k: [t.to_dict_item() for t in list(v)] for k, v in
-                              itertools.groupby(sorted(instances, key=keyfunc), keyfunc)}
-                logger.info(
-                    f"{self.target_id} 下的服务: {self.service} 中的实例: {self.instance} 由 {self.status} 改为 {params['status']}")
-                body = self.to_dict_item()
-                if params['status'] == "unhealthy":
-                    body['successes'] = 0
-                    body['failures'] = params['failures'] + self.failures
-                    body['timeouts'] = params['timeouts'] + self.timeouts
-                else:
-                    body['successes'] = params['successes'] + self.successes
-                    body['failures'] = 0
-                    body['timeouts'] = 0
-                body['last_time'] = params['last_time']
-                body['new_status'] = params['status']
-                body['items'] = group_dict
-                try:
-                    resp = httpx.request(method=healthcheck.get("alert", {}).get("method", "GET").upper(), timeout=10,
-                                         url=healthcheck.get("alert", {}).get("url"), params={"body": json.dumps(body)})
-                    logger.info(
-                        f"健康检查状态变更通知 参数为: {json.dumps(body)} {healthcheck.get('alert', {})} 结果为: {resp.text}, status_code: {resp.status_code}, headers: {resp.headers}")
-                except Exception as e:
-                    logger.error(f"健康检查状态变更通知 {healthcheck.get('alert', {})} 报错 {e.args}")
-
+        if params['status'] != self.status and healthcheck.get("alert", {}).get("url"):
+            instances = self.get_target_service_all_instance(0, sqla_helper)
+            keyfunc = lambda item: item['status']
+            group_dict = {k: [t.to_dict_item() for t in list(v)] for k, v in
+                          itertools.groupby(sorted(instances, key=keyfunc), keyfunc)}
+            logger.info(
+                f"{self.target_id} 下的服务: {self.service} 中的实例: {self.instance} 由 {self.status} 改为 {params['status']}")
+            body = self.to_dict_item()
             if params['status'] == "unhealthy":
-                try:
-                    with sqla_helper.session as ss:
-                        logger.info(f"删除无效的实例: {json.dumps(self)}")
-                        sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.__eq__(self.instance))
-                        ss.execute(sql)
-                        ss.commit()
-                except Exception as e:
-                    logger.error(f"健康检查删除无效的实例 {self.instance} 报错 {e.args}")
+                body['successes'] = 0
+                body['failures'] = params['failures'] + self.failures
+                body['timeouts'] = params['timeouts'] + self.timeouts
+            else:
+                body['successes'] = params['successes'] + self.successes
+                body['failures'] = 0
+                body['timeouts'] = 0
+            body['last_time'] = params['last_time']
+            body['new_status'] = params['status']
+            body['items'] = group_dict
+            try:
+                resp = httpx.request(method=healthcheck.get("alert", {}).get("method", "GET").upper(), timeout=10,
+                                     url=healthcheck.get("alert", {}).get("url"), params={"body": json.dumps(body)})
+                logger.info(
+                    f"健康检查状态变更通知 参数为: {json.dumps(body)} {healthcheck.get('alert', {})} 结果为: {resp.text}, status_code: {resp.status_code}, headers: {resp.headers}")
+            except Exception as e:
+                logger.error(f"健康检查状态变更通知 {healthcheck.get('alert', {})} 报错 {e.args}")
 
     def save_or_update(self, discovery_instances: ['Instance'], sqla_helper: SqlaReflectHelper):
         with sqla_helper.session as ss:
@@ -188,6 +177,15 @@ class DiscoveryInstance(Base):
     def set_counts(self, params: {}, sqla_helper: SqlaReflectHelper):
         with sqla_helper.session as ss:
             ss.execute(SQL_UPDATE_INSTANCES, params)
+            ss.commit()
+
+    def delete_by_instances(self, instances: [], sqla_helper: SqlaReflectHelper):
+        if len(instances) == 0:
+            return
+        with sqla_helper.session as ss:
+            logger.info(f"删除无效的实例: {json.dumps(instances)}")
+            sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.in_(instances))
+            ss.execute(sql)
             ss.commit()
 
     def get_target_service_all_instance(self, skip: 0, sqla_helper: SqlaReflectHelper) -> List['DiscoveryInstance']:

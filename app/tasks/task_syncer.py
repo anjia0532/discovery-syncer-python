@@ -140,6 +140,7 @@ def syncer(target: dict):
                     # 移除 discovery_instances 中 unhealthy 实例
                     unhealthy_instances = [d for d in discovery_instances if
                                            f"{d.ip}:{d.port}" in [b.instance for b in unhealthy]]
+                    # 重新修改注册中心实例
                     discovery_instances = [d for d in discovery_instances if
                                            f"{d.ip}:{d.port}" not in [b.instance for b in unhealthy]]
                     if unhealthy_instances:
@@ -149,6 +150,9 @@ def syncer(target: dict):
                         # 下线 unhealthy 实例
                         registration = Registration(service_name=service.name, ext_data=target.get("config", {}))
                         discovery_client.modify_registration(registration, unhealthy_instances)
+
+                        delete_instances = [f"{d.ip}:{d.port}" for d in unhealthy_instances]
+                        DiscoveryInstance({}).delete_by_instances(delete_instances, sqla_helper)
             except Exception as e:
                 logger.warning(f"健康检查下线实例失败, {target.get('id', None)} , {service.name}", exc_info=e)
 
