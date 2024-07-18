@@ -151,8 +151,7 @@ def syncer(target: dict):
                         registration = Registration(service_name=service.name, ext_data=target.get("config", {}))
                         discovery_client.modify_registration(registration, unhealthy_instances)
 
-                        delete_instances = [f"{d.ip}:{d.port}" for d in unhealthy_instances]
-                        DiscoveryInstance({}).delete_by_instances(delete_instances, sqla_helper)
+                    DiscoveryInstance({}).delete_by_instances([d.instance for d in unhealthy], sqla_helper)
             except Exception as e:
                 logger.warning(f"健康检查下线实例失败, {target.get('id', None)} , {service.name}", exc_info=e)
 
