@@ -160,9 +160,23 @@ class DiscoveryInstance(Base):
             instances = ss.query(DiscoveryInstance).filter(and_(DiscoveryInstance.target_id == self.target_id,
                                                                 DiscoveryInstance.service == self.service)).all()
             if len(discovery_instances) == 0:
+                if len(instances) > 0:
+                    delete_instances = [d.instance for d in instances]
+                    logger.info(f"删除无效的实例: {json.dumps(delete_instances)}")
+                    sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.in_(delete_instances))
+                    ss.execute(sql)
+                    ss.commit()
                 return instances
             tmps = [f"{d.ip}:{d.port}" for d in discovery_instances if d.enabled]
             ins = [d.instance for d in instances]
+
+            # 删除无效的
+            delete_instances = [d for d in ins if d not in tmps]
+            if delete_instances:
+                logger.info(f"删除无效的实例: {json.dumps(delete_instances)}")
+                sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.in_(delete_instances))
+                ss.execute(sql)
+                ss.commit()
 
             # 增加新增的
             save_instances = [DiscoveryInstance(
