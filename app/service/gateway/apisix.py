@@ -142,7 +142,7 @@ class Apisix(Gateway):
             body = tpl.substitute(name=upstream_name, nodes=nodes_json)
 
         resp = self.apisix_execute(method, uri, {}, body)
-        logger.info("更新upstream结果: %s", resp)
+        logger.info(f"更新 upstream 结果: {resp}")
 
     def fetch_admin_api_to_file(self, file_name: str):
         """
