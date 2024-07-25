@@ -67,6 +67,7 @@ class DiscoveryInstance(Base):
         self.timeouts = item.get('timeouts', 0)
         self.status = item.get('status', 'unknown')
         self.create_time = item.get('create_time', None)
+        self.last_time = item.get('last_time', None)
 
     def __getitem__(self, field):
         return self.__dict__.get(field)
@@ -82,7 +83,7 @@ class DiscoveryInstance(Base):
 
     def get_instances_by_target_id(self, target_id: str, sqla_helper: SqlaReflectHelper) -> List['DiscoveryInstance']:
         with sqla_helper.session as ss:
-            instances = ss.query(DiscoveryInstance).filter(and_(DiscoveryInstance.target_id == target_id)).all()
+            instances = ss.query(DiscoveryInstance).filter(DiscoveryInstance.target_id == target_id).all()
             if instances:
                 return [row.to_dict() for row in instances]
             else:
@@ -93,6 +94,15 @@ class DiscoveryInstance(Base):
         params = {'id': self.id, "successes": 0, "failures": 0, "timeouts": 0, "status": self.status}
         schema = ""
         try:
+            if self.status == "unhealthy":
+                # 如果不健康了，不再进行健康检查，超过10分钟后删除实例
+                # 如果实例恢复了，会重新插入，进而重新进行健康检查
+                # 如果一直不恢复，或者已经下线了，提前删除也不影响
+                if self.last_time and datetime.now().timestamp() - datetime.strptime(self.last_time,
+                                                                                     '%Y-%m-%d %H:%M:%S').timestamp() >= 600:
+                    logger.warning(f"实例 {self.target_id} {self.service} {self.instance} 超过10分钟仍未恢复，删除")
+                    self.delete_by_instances([self.instance], sqla_helper)
+                return
             if HealthCheckType.HTTP.value == healthcheck.get("type"):
                 schema = "http://"
             elif HealthCheckType.HTTPS.value == healthcheck.get("type"):
@@ -160,32 +170,28 @@ class DiscoveryInstance(Base):
             instances = ss.query(DiscoveryInstance).filter(and_(DiscoveryInstance.target_id == self.target_id,
                                                                 DiscoveryInstance.service == self.service)).all()
             if len(discovery_instances) == 0:
-                if len(instances) > 0:
-                    delete_instances = [d.instance for d in instances]
-                    logger.info(f"删除无效的实例: {json.dumps(delete_instances)}")
-                    sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.in_(delete_instances))
-                    ss.execute(sql)
-                    ss.commit()
                 return instances
-            tmps = [f"{d.ip}:{d.port}" for d in discovery_instances if d.enabled]
-            ins = [d.instance for d in instances]
-
-            # 删除无效的
-            delete_instances = [d for d in ins if d not in tmps]
-            if delete_instances:
-                logger.info(f"删除无效的实例: {json.dumps(delete_instances)}")
-                sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.in_(delete_instances))
-                ss.execute(sql)
-                ss.commit()
+            dis_ins = [f"{d.ip}:{d.port}" for d in discovery_instances if d.enabled]
+            db_ins = [d.instance for d in instances]
 
             # 增加新增的
             save_instances = [DiscoveryInstance(
                 {"id": self.id or str(uuid.uuid4()), "target_id": self.target_id, "service": self.service,
-                 "instance": d, "create_time": datetime.now()}) for d in tmps if d not in ins]
+                 "instance": d, "create_time": datetime.now()}) for d in dis_ins if d not in db_ins]
+
+            update_instances = [d for d in instances if
+                                d.instance in dis_ins and d.status == "unhealthy" and d.last_time and datetime.now().timestamp() - d.last_time.timestamp() >= 60]
+
             if save_instances:
                 logger.info(f"新增的实例: {json.dumps([d.to_dict_item() for d in save_instances])}")
                 ss.add_all(save_instances)
                 ss.commit()
+            # 更新已有实例
+            if update_instances:
+                logger.info(f"更新的实例: {json.dumps([d.to_dict_item() for d in update_instances])}")
+                for d in update_instances:
+                    self.set_counts({'id': d.id, "successes": 0, "failures": 0, "timeouts": 0, "status": "unknown",
+                                     "last_time": datetime.now()}, sqla_helper)
             return instances
 
     def set_counts(self, params: {}, sqla_helper: SqlaReflectHelper):
