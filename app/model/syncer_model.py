@@ -7,6 +7,7 @@ from typing import List, Dict
 
 import httpx
 from db_libs.sqla_lib import SqlaReflectHelper
+from funboost import funboost_current_task
 from httpx import TimeoutException
 from pydantic import BaseModel, Field
 from pydantic import model_validator, AliasChoices
@@ -136,8 +137,12 @@ class DiscoveryInstance(Base):
         self.set_counts(params, sqla_helper)
         if not success:
             instances = self.get_target_service_all_instance(0, sqla_helper)
+            fct = funboost_current_task()
+            msg_time = None
+            if fct:
+                msg_time = fct.function_result_status.publish_time
             logger.warning(
-                f"健康检查 {self.target_id} {self.service} {schema}{self.instance}{healthcheck.get('uri')} , 实例状态: {json.dumps([d.to_dict_item() for d in instances])}")
+                f"健康检查 {self.target_id} {self.service} {schema}{self.instance}{healthcheck.get('uri')} ,msg_time: {msg_time}, 实例状态: {json.dumps([d.to_dict_item() for d in instances])}")
         if params['status'] != self.status and healthcheck.get("alert", {}).get("url"):
             instances = self.get_target_service_all_instance(0, sqla_helper)
             keyfunc = lambda item: item['status']

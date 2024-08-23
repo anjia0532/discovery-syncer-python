@@ -19,6 +19,8 @@ class FunboostCommonConfig(BoosterParams):
     is_push_to_dlx_queue_when_retry_max_times: bool = True
     # 任务过滤的失效期，为0则永久性过滤任务。例如设置过滤过期时间是1800秒 ， 30分钟前发布过1 + 2 的任务，现在仍然执行，如果是30分钟以内发布过这个任务，则不执行1 + 2
     task_filtering_expire_seconds: int = 0
+    # 消息过期时间，为0永不过期，为10则代表，10秒之前发布的任务如果现在才轮到消费则丢弃任务。
+    msg_expire_senconds: int = 120
     # # 是否对函数入参进行过滤去重.
     do_task_filtering: bool = False
     # 运行时候,是否记录从消息队列获取出来的消息内容

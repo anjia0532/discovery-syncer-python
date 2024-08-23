@@ -6,8 +6,9 @@ from fastapi import APIRouter
 from fastapi import Response
 from fastapi.params import Path, Body, Query
 
+from core.database import db
 from . import RESP_OK
-from app.model.syncer_model import Registration, RegistrationType, RegistrationStatus
+from app.model.syncer_model import Registration, RegistrationType, RegistrationStatus, DiscoveryInstance
 from app.service.discovery.discovery import Discovery
 from app.service.gateway.gateway import Gateway
 from core.lib.logger import for_handler
@@ -70,6 +71,9 @@ def discovery(discovery_name: Annotated[str, Path(title="discovery_name", descri
                 raise Exception(
                     f"最少存活实例数{alive_num}不满足，总实例数(含之前已下线数量){len(discovery_instances)}，要下线实例数{len(down_hosts)}，剩余在线实例数{len(alive_hosts)}")
         discovery_client.modify_registration(registration, instances=instances)
+        DiscoveryInstance({}).delete_by_instances(
+            [f"{instance.ip}:{instance.port}" for instance in instances if not instance.enabled],
+            db.get_sqla_helper()[1])
     except Exception as e:
         logger.error(f"主动下线上线注册中心的服务失败,discovery_name {discovery_name},registration {registration}",
                      exc_info=e)
