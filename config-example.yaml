@@ -23,7 +23,7 @@ gateway-servers:
     kong1:
         type: kong
         admin-url: http://kong-server:8001
-        prefix: /upstreams/
+        prefix: /
         config:
             targets_uri: /targets/all
 
@@ -153,5 +153,5 @@ targets:
                         },
                         "threshold": 0
                     },
-                    "tags": ["discovery-syncer-auto"]
+                    "tags": ["discovery-syncer-python-auto"]
                 }

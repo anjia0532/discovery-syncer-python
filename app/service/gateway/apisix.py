@@ -26,7 +26,7 @@ default_apisix_upstream_template = """
         "read": 30
     },
     "type":"roundrobin",
-    "desc": "auto sync by https://github.com/anjia0532/discovery-syncer-python-python"
+    "desc": "auto sync by https://github.com/anjia0532/discovery-syncer-python"
 }
 """
 

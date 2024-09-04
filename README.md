@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.6.12
+docker run anjia0532/discovery-syncer-python:v2.6.13
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -27,17 +27,17 @@ docker run anjia0532/discovery-syncer-python:v2.6.12
 头校验，需要在配置文件 `common.syncer-api-key` 修改默认值，
 长度最低为32位，需要同时包含大小写字母，数字，和特殊字符
 
-| 路径                                               | 返回值        | 用途                                                     |
-|--------------------------------------------------|:-----------|:-------------------------------------------------------|
-| `GET /`                                          | `OK`       | 服务是否启动                                                 |
-| `GET /redoc/`                                    | redocly ui | Redocly 接口文档                                           |
-| `GET /docs/`                                     | swagger ui | Swagger 接口文档                                           |
-| `GET /-/reload`                                  | `OK`       | 重新加载配置文件，加载成功返回OK，主要是cicd场景或者k8s的configmap reload 场景使用 |
-| `GET /health`                                    | JSON       | 判断服务是否健康，可以配合k8s等容器服务的健康检查使用                           |
-| `PUT /discovery/{discovery-name}?alive_num=1`    | `OK`       | 主动下线上线注册中心的服务,配合CI/CD发版业务用                             |
-| `GET /gateway-api-to-file/{gateway-name}`        | text/plain | 读取网关admin api转换成文件用于备份或者db-less模式                      |
-| `POST /migrate/{gateway-name}/to/{gateway-name}` | `OK`       | 将网关数据迁移(目前仅支持apisix)                                   |
-| `PUT /restore/{gateway-name}`                    | `OK`       | 将 db-less 文件还原到网关(目前仅支持apisix)                         |
+| 路径                                               | 返回值        | 用途                                                         |
+|--------------------------------------------------|:-----------|:-----------------------------------------------------------|
+| `GET /`                                          | `OK`       | 服务是否启动                                                     |
+| `GET /redoc/`                                    | redocly ui | Redocly 接口文档                                               |
+| `GET /docs/`                                     | swagger ui | Swagger 接口文档                                               |
+| `GET /-/reload`                                  | `OK`       | 重新加载配置文件，加载成功返回OK，主要是cicd场景或者k8s的configmap reload 场景使用     |
+| `GET /health`                                    | JSON       | 判断服务是否健康，可以配合k8s等容器服务的健康检查使用                               |
+| `PUT /discovery/{discovery-name}?alive_num=1`    | `OK`       | 主动下线上线注册中心的服务,配合CI/CD发版业务用                                 |
+| `GET /gateway-api-to-file/{gateway-name}`        | text/plain | 读取网关admin api转换成文件用于备份或者db-less模式(目前仅支持apisix,kong建议用deck) |
+| `POST /migrate/{gateway-name}/to/{gateway-name}` | `OK`       | 将网关数据迁移(目前仅支持apisix,kong建议用deck)                           |
+| `PUT /restore/{gateway-name}`                    | `OK`       | 将 db-less 文件还原到网关(目前仅支持apisix,kong建议用deck)                 |
 
 #### `GET /-/reload` 重新加载配置文件
 

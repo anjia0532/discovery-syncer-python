@@ -12,7 +12,7 @@ logger = for_service(__name__)
 default_kong_upstream_template = """
 {
     "name": "$name",
-    "tags": ["discovery-syncer-auto"]
+    "tags": ["discovery-syncer-python-auto"]
 }
 """
 
@@ -20,7 +20,7 @@ default_kong_target_template = """
 {
     "target": "$ip:$port",
     "weight": $weight,
-    "tags": ["discovery-syncer-auto"]
+    "tags": ["discovery-syncer-python-auto"]
 }
 """
 
@@ -33,7 +33,7 @@ class Kong(Gateway):
     def get_service_all_instances(self, target: dict, upstream_name: str = None) -> List[Instance]:
         # https://docs.konghq.com/gateway/api/admin-oss/latest/
         upstream_name = self.get_upstream_name(target, upstream_name)
-        uri = f"{upstream_name}{self._config.config.get('targets_uri', '/targets')}"
+        uri = f"upstreams/{upstream_name}{self._config.config.get('targets_uri', '/targets')}"
         resp = self.kong_execute("GET", uri, {})
         if resp.status_code == 404:
             return []
@@ -51,12 +51,12 @@ class Kong(Gateway):
             return
         if upstream_name not in self.service_name_map:
             tpl = Template(target.get("config").get("template", default_kong_upstream_template))
-            resp = self.kong_execute("POST", "", {}, tpl.substitute(name=upstream_name))
+            self.kong_execute("PUT", "upstreams", {}, tpl.substitute(name=upstream_name))
             self.service_name_map[upstream_name] = True
 
         tpl = Template(default_kong_target_template)
         for instance in diff_ins:
-            target_uri = f"{upstream_name}/targets/"
+            target_uri = f"upstreams/{upstream_name}/targets/"
             method = "POST"
             data = None
             if instance.enabled:
@@ -64,24 +64,29 @@ class Kong(Gateway):
             else:
                 target_uri = f"{target_uri}/{instance.ip}:{instance.port}"
                 method = "DELETE"
-            self.kong_execute(method, target_uri, {}, data)
+            resp = self.kong_execute(method, target_uri, {}, data)
+            if instance.enabled and resp.status_code == 409:
+                target_uri = f"{target_uri}/{instance.ip}:{instance.port}"
+                method = "PUT"
+                self.kong_execute(method, target_uri, {}, data)
 
     def fetch_admin_api_to_file(self, file_name: str) -> Tuple[str, str]:
         # https://docs.konghq.com/gateway/3.6.x/production/deployment-topologies/db-less-and-declarative-config/
+        # https://docs.konghq.com/deck/1.38.x/guides/backup-restore/
         raise Exception("Unrealized")
 
     def migrate_to(self, target_gateway: 'Gateway'):
+        # https://docs.konghq.com/deck/1.38.x/guides/backup-restore/
         raise Exception("Unrealized")
 
     def restore_gateway(self, body: str) -> str:
+        # https://docs.konghq.com/deck/1.38.x/guides/backup-restore/
         raise Exception("Unrealized")
 
     def kong_execute(self, method, uri, params, data=None):
         resp = httpx.request(method, f"{self._config.admin_url}{self._config.prefix}{uri}",
                              params=params, data=data, timeout=10,
-                             headers={"X-API-KEY": self._config.config.get("X-API-KEY"),
-                                      "Content-Type": "application/json",
-                                      "Accept": "application/json"})
+                             headers={"Content-Type": "application/json", "Accept": "application/json"})
 
         logger.info(
             f"请求 kong 接口, method: {method}, url: {self._config.admin_url}{self._config.prefix}{uri}, 请求参数: {params}, 请求数据: {data}, 响应结果: {resp.text}")
