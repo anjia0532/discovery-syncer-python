@@ -1,13 +1,17 @@
+import gc
+import sys
 from datetime import datetime, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter
 from fastapi import Response
+from fastapi.params import Query
 from starlette.responses import JSONResponse
 
-from . import RESP_OK
 from app.model.syncer_model import Jobs
 from core.database import db
 from core.lib.logger import for_handler
+from . import RESP_OK
 
 router = APIRouter()
 
@@ -39,6 +43,24 @@ def reload():
     except Exception as e:
         logger.error(f"重新加载配置文件报错", exc_info=e)
     return Response(content=RESP_OK)
+
+
+@router.get('/show-memory', summary="显示内存占用最大的前N个对象", description="显示内存占用最大的前N个对象")
+def show_memory(num: Annotated[int, Query(title="num", description="前几，默认20")] = 20):
+    """
+    显示内存占用最大的前N个对象
+    @rtype: str
+    @return: 成功返回 OK
+    """
+    objects_list = []
+    contents = []
+    for obj in gc.get_objects():
+        size = sys.getsizeof(obj)
+        objects_list.append((obj, size))
+    sorted_values = sorted(objects_list, key=lambda x: x[1], reverse=True)
+    for obj, size in sorted_values[:num]:
+        contents.append(f"OBJ: {id(obj)}, TYPE:{type(obj)}, SIZE: {size / 1024 / 1024:.2f}MB, REPR: {str(obj)[:100]}")
+    return Response(content="\n".join(contents))
 
 
 @router.get("/health", summary="健康检查", description="健康检查")

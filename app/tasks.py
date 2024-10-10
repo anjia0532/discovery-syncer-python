@@ -2,7 +2,7 @@ import time
 from functools import wraps
 from threading import Thread
 
-from funboost import boost, BrokerEnum, BoostersManager
+from funboost import BoostersManager
 
 task_list = list()
 

@@ -9,15 +9,42 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v2.6.13
+docker run anjia0532/discovery-syncer-python:v2.7.0
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
 `-c http://xxxxx/nacos/v1/cs/configs?tenant=public&group=DEFAULT_GROUP&dataId=discovery-syncer.yaml` ,便于管理
 
+**破坏性更新**
+
+v2.7.0 版本增加了redis的依赖，原方案会导致内存缓慢增长，部分情况下甚至出现任务阻塞卡死的情况，如果不想引入redis,可以退回v2.6.13版本
+
+或者修改 `app.tasks.task_syncer.py`和 `app.scheduler.scheduler.py` 将 `funboost_background_scheduler_redis_store` 改为 `funboost_aps_scheduler`
+将 <https://github.com/anjia0532/discovery-syncer-python/blob/master/app/tasks/common.py> 改为
+```python
+class FunboostCommonConfig(BoosterParams):
+    # 中间件选型见3.1章节 https://funboost.readthedocs.io/zh/latest/articles/c3.html
+    broker_kind: BrokerEnum = BrokerEnum.SQLITE_QUEUE
+    # 是否使用分布式控频
+    is_using_distributed_frequency_control: bool = True
+    # 是否将发布者的心跳发送到redis，有些功能的实现需要统计活跃消费者。因为有的中间件不是真mq。这个功能,需要安装redis.
+    is_send_consumer_hearbeat_to_redis: bool = True
+```
+
 ### 配置文件
 
 [点击查看 config.yaml](https://github.com/anjia0532/discovery-syncer-python/blob/master/config-example.yaml)
+
+运行的时候，需要配置环境变量
+```ini
+REDIS_HOST=127.0.0.1
+REDIS_USERNAME=
+REDIS_PASSWORD=
+REDIS_PORT=6379
+REDIS_DB=7
+REDIS_DB_FILTER_AND_RPC_RESULT=8
+REDIS_URL=f'redis://{REDIS_USERNAME}:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
+```
 
 ### Api接口
 
@@ -33,11 +60,16 @@ docker run anjia0532/discovery-syncer-python:v2.6.13
 | `GET /redoc/`                                    | redocly ui | Redocly 接口文档                                               |
 | `GET /docs/`                                     | swagger ui | Swagger 接口文档                                               |
 | `GET /-/reload`                                  | `OK`       | 重新加载配置文件，加载成功返回OK，主要是cicd场景或者k8s的configmap reload 场景使用     |
+| `GET /show-memory`                               | text/plain | 显示当前内存使用情况，主要是排查内存泄露等问题用                                   |
 | `GET /health`                                    | JSON       | 判断服务是否健康，可以配合k8s等容器服务的健康检查使用                               |
 | `PUT /discovery/{discovery-name}?alive_num=1`    | `OK`       | 主动下线上线注册中心的服务,配合CI/CD发版业务用                                 |
 | `GET /gateway-api-to-file/{gateway-name}`        | text/plain | 读取网关admin api转换成文件用于备份或者db-less模式(目前仅支持apisix,kong建议用deck) |
 | `POST /migrate/{gateway-name}/to/{gateway-name}` | `OK`       | 将网关数据迁移(目前仅支持apisix,kong建议用deck)                           |
 | `PUT /restore/{gateway-name}`                    | `OK`       | 将 db-less 文件还原到网关(目前仅支持apisix,kong建议用deck)                 |
+
+#### `GET /show-memory?num=20` 查看内存使用情况
+
+num 是显示的条数，默认20条
 
 #### `GET /-/reload` 重新加载配置文件
 
@@ -74,7 +106,8 @@ docker run anjia0532/discovery-syncer-python:v2.6.13
 
 `discovery-name` 是注册中心的名字，如果不存在，则返回 `Not Found` http status code 是404
 
-`alive_num` 是执行上下线操作后，断言存活实例数量，小于等于0则不判断，不传默认1，不满足则报错，http status code 是500, content 类似 `('最少存活实例数1不满足，总实例数(含之前已下线数量)2，要下线实例数2，剩余在线实例数0',)`
+`alive_num` 是执行上下线操作后，断言存活实例数量，小于等于0则不判断，不传默认1，不满足则报错，http status code 是500, content
+类似 `('最少存活实例数1不满足，总实例数(含之前已下线数量)2，要下线实例数2，剩余在线实例数0',)`
 
 body入参
 
@@ -347,6 +380,7 @@ targets:
 3. 同步机制目前是基于定时轮询，效率比较低，有待优化，比如增加缓存开关，上游注册中心与缓存比对没有差异的情况下，不去拉取/变更下游网关的upstream信息，或者看看注册中心支不支持变动主动通知机制等。
 
 ## 鸣谢
+
 - [funboost -- python万能分布式函数调度框架](https://github.com/ydf0509/funboost)
 - [apisix -- 云原生Api网关](https://github.com/apache/apisix)
 - [kong -- 云原生Api网关](https://github.com/Kong/kong)

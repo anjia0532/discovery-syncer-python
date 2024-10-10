@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
+import os
 
 from funboost.utils.simple_data_class import DataClassBase
 
@@ -26,6 +27,16 @@ class BrokerConnConfig(DataClassBase):
     如果@boost装饰器设置is_using_rpc_mode为True或者 is_using_distributed_frequency_control为True或do_task_filtering=True则需要把redis连接配置好，默认是False不强迫用户安装redis。
     """
 
+    # redis 相关配置
+    REDIS_HOST = os.environ.get('REDIS_HOST', '127.0.0.1')
+    REDIS_USERNAME = os.environ.get('REDIS_USERNAME', '')
+    REDIS_PASSWORD = os.environ.get('REDIS_PASSWORD', '')
+    REDIS_PORT = os.environ.get('REDIS_PORT', 6379)
+    REDIS_DB = os.environ.get('REDIS_DB', 7)  # redis消息队列所在db，请不要在这个db放太多其他键值对，框架里面有的功能会scan扫描unacked的键名，使用单独的db。
+    REDIS_DB_FILTER_AND_RPC_RESULT = os.environ.get('REDIS_DB', 8)  # 如果函数做任务参数过滤 或者使用rpc获取结果，使用这个db，因为这个db的键值对多，和redis消息队列db分开
+    REDIS_URL = f'redis://{REDIS_USERNAME}:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
+    # MongoDB 相关配置
+    MONGO_CONNECT_URL = os.environ.get('MONGO_CONNECT_URL', None)
 
 class FunboostCommonConfig(DataClassBase):
     # nb_log包的第几个日志模板，内置了7个模板，可以在你当前项目根目录下的nb_log_config.py文件扩展模板。
