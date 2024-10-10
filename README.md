@@ -31,6 +31,8 @@ class FunboostCommonConfig(BoosterParams):
     is_send_consumer_hearbeat_to_redis: bool = True
 ```
 
+参考 https://github.com/anjia0532/discovery-syncer-python/commit/eb4f0299ae330d259b2331ecef75f336a2c5c37a
+
 ### 配置文件
 
 [点击查看 config.yaml](https://github.com/anjia0532/discovery-syncer-python/blob/master/config-example.yaml)
