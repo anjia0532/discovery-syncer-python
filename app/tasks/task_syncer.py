@@ -5,6 +5,7 @@ import re
 
 from apscheduler.triggers.cron import CronTrigger
 from funboost import boost, funboost_aps_scheduler, funboost_current_task
+from funboost.timing_job.apscheduler_use_redis_store import funboost_background_scheduler_redis_store
 from nb_time import NbTime
 
 from app.model.syncer_model import Jobs, DiscoveryInstance, Registration
@@ -51,7 +52,7 @@ def get_gateway_client(name: str) -> Gateway:
 
 
 def clear_client():
-    funboost_aps_scheduler.remove_all_jobs()
+    funboost_background_scheduler_redis_store.remove_all_jobs()
     from app.model.config import discovery_clients, gateway_clients
 
     discovery_clients.clear()
@@ -206,18 +207,18 @@ def reload():
                 Jobs(**target.dict()).save_or_update(sqla_helper)
                 # 注册定时任务
                 if next_run_time:
-                    funboost_aps_scheduler.add_push_job(syncer, id=target.id, name=target.id,
+                    funboost_background_scheduler_redis_store.add_push_job(syncer, id=target.id, name=target.id,
                                                         next_run_time=next_run_time,
                                                         kwargs={"target": target.model_dump()}, replace_existing=True)
                 else:
-                    funboost_aps_scheduler.add_push_job(syncer, id=target.id, name=target.id,
+                    funboost_background_scheduler_redis_store.add_push_job(syncer, id=target.id, name=target.id,
                                                         trigger=CronTrigger(second=second, minute=minute, hour=hour,
                                                                             day=day, month=month,
                                                                             day_of_week=day_of_week),
                                                         kwargs={"target": target.model_dump()}, replace_existing=True)
                 # 健康检查
                 if target.healthcheck:
-                    funboost_aps_scheduler.add_push_job(health_check, id="health-check",
+                    funboost_background_scheduler_redis_store.add_push_job(health_check, id="health-check",
                                                         name="health-check",
                                                         trigger=CronTrigger(second=second, minute=minute, hour=hour,
                                                                             day=day, month=month,
