@@ -100,7 +100,7 @@ class DiscoveryInstance(Base):
                 # 如果实例恢复了，会重新插入，进而重新进行健康检查
                 # 如果一直不恢复，或者已经下线了，提前删除也不影响
                 if self.last_time and datetime.now().timestamp() - datetime.strptime(self.last_time,
-                                                                                     '%Y-%m-%d %H:%M:%S').timestamp() >= 600:
+                                                                                     '%Y-%m-%d %H:%M:%S.%f').timestamp() >= 600:
                     logger.warning(f"实例 {self.target_id} {self.service} {self.instance} 超过10分钟仍未恢复，删除")
                     self.delete_by_instances([self.instance], sqla_helper)
                 return
