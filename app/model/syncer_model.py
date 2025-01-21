@@ -1,7 +1,7 @@
 import itertools
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import List, Dict
 
@@ -76,6 +76,24 @@ class DiscoveryInstance(Base):
     def __setitem__(self, k, v):
         self.k = v
 
+    def check_timeout(self,last_time):
+        if self.last_time is None:
+            return False
+        self.last_time = self.last_time.split('.')[0]
+        # 尝试不同的日期时间格式
+        formats = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"]
+        for fmt in formats:
+            try:
+                last_time_dt = datetime.strptime(last_time, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return False
+
+        return datetime.now() - last_time_dt > timedelta(minutes=10)
+
+
     def to_dict(self):
         return DiscoveryInstance(dict([(k, getattr(self, k)) for k in self.__dict__.keys() if not k.startswith("_")]))
 
@@ -99,8 +117,7 @@ class DiscoveryInstance(Base):
                 # 如果不健康了，不再进行健康检查，超过10分钟后删除实例
                 # 如果实例恢复了，会重新插入，进而重新进行健康检查
                 # 如果一直不恢复，或者已经下线了，提前删除也不影响
-                if self.last_time and datetime.now().timestamp() - datetime.strptime(self.last_time,
-                                                                                     '%Y-%m-%d %H:%M:%S.%f').timestamp() >= 600:
+                if self.check_timeout(self.last_time):
                     logger.warning(f"实例 {self.target_id} {self.service} {self.instance} 超过10分钟仍未恢复，删除")
                     self.delete_by_instances([self.instance], sqla_helper)
                 return
