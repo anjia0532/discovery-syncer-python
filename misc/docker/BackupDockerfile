@@ -1,7 +1,7 @@
 ##########################
 # Build the release image.
 FROM python:3.11-slim-bullseye
-LABEL MAINTAINER AnJia <anjia0532@gmail.com>
+LABEL MAINTAINER="AnJia <anjia0532@gmail.com>"
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/opt/discovery-syncer/

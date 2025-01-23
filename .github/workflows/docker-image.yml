@@ -1,0 +1,68 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "master"]
+    tags:
+      - '*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Docker meta syncer
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            anjia0532/discovery-syncer-python
+          flavor: |
+            latest=true
+          tags: |
+            type=semver,enable=true,pattern=v{{major}}
+            type=ref,enable=true,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            maintainer=AnJia <anjia0532@gmail.com>
+            org.opencontainers.image.description="从注册中心(如Nacos,Eureka)同步实例信息到网关服务(如Apisix,Kong)"
+            org.opencontainers.image.title=discovery-syncer-python
+
+      - name: Docker meta syncer backup
+        id: meta-backup
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            anjia0532/discovery-syncer-python-backup
+          flavor: |
+            latest=true
+          tags: |
+            type=semver,enable=true,pattern=v{{major}}
+            type=ref,enable=true,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            maintainer=AnJia <anjia0532@gmail.com>
+            org.opencontainers.image.description="从注册中心(如Nacos,Eureka)同步实例信息到网关服务(如Apisix,Kong)"
+            org.opencontainers.image.title=discovery-syncer-python
+
+      - name: Log in to GitHub Docker Registry
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.HUB_NAME }}
+          password: ${{ secrets.HUB_PWD }}
+
+      - name: Build discovery-syncer-python image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: misc/docker/BackupDockerfile
+          push: true
+          labels: ${{ steps.meta-backup.outputs.labels }}
+          tags: ${{ steps.meta-backup.outputs.tags }}
+          cache-from: type=registry,ref=anjia0532/discovery-syncer-python-backup:latest
+          cache-to: type=inline
