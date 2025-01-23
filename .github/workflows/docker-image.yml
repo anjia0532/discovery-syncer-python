@@ -79,3 +79,13 @@ jobs:
           tags: ${{ steps.meta-backup.outputs.tags }}
           cache-from: type=registry,ref=anjia0532/discovery-syncer-python-backup:latest
           cache-to: type=inline
+
+      - name: Docker Hub Description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.HUB_NAME }}
+          password: ${{ secrets.HUB_PWD }}
+          repository: anjia0532/discovery-syncer-python
+          readme-filepath: ./README.md
+          enable-url-completion: true
+          short-description: ${{ github.event.repository.description }}
