@@ -107,7 +107,7 @@ def syncer(target: dict):
         return
     services = discovery_client.get_all_service(target.get("config"))
     if len(services) == 0:
-        logger.warning(f"没有获取到服务列表{target}")
+        logger.info(f"没有获取到服务列表{target}")
         return
 
     logger.info(f"同步服务列表, 作业: {target.get('id')} services: {services}")
