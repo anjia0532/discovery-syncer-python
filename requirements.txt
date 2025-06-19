@@ -19,3 +19,4 @@ nb-time==2.4
 pydantic-yaml==1.5.1
 cachetools==6.1.0
 async-timeout==5.0.1
+SQLAlchemy==2.0.41
