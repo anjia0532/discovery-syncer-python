@@ -1,7 +1,8 @@
-fastapi==0.117.1
+fastapi==0.121.1
 python-dotenv==1.1.1
 typing-extensions==4.15.0
-uvicorn[standard]==0.36.0
+uvicorn[standard]==0.38.0
+PyYAML==6.0.3
 pytest==8.4.2
 # pytest-cov==5.0.0
 # pytest-html==4.1.1
@@ -12,14 +13,16 @@ BeautifulReport==0.1.3
 # aiocache~=0.12.2
 # databases==0.9.0
 # asyncpg==0.29.0
-funboost==50.3
-pydantic-settings==2.10.1
+funboost==50.4
+pydantic-settings==2.12.0
 persist-queue[extra]
-db-libs==1.1
+db-libs==1.2
 nb-time
 pydantic-yaml==1.6.0
 cachetools==6.2.0
 async-timeout==5.0.1
 SQLAlchemy==2.0.43
-elasticsearch==8.19.1
+elasticsearch9
+elasticsearch8
+elasticsearch7
 PyMySQL==1.1.2

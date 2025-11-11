@@ -194,11 +194,35 @@ class ElasticHandler(logging.Handler):
         logging.Handler.__init__(self)
         from elasticsearch import Elasticsearch, helpers
         self._helpers = helpers
-        self._es_client = Elasticsearch(elastic_hosts, )
+        self._es_client = self.get_es_client(elastic_hosts, )
+
         self._index_prefix = index_prefix
         t = Thread(target=self._do_bulk_op)
         t.setDaemon(True)
         t.start()
+
+    def get_es_client(self, elastic_hosts):
+        from elasticsearch7 import Elasticsearch as Elasticsearch7
+        from elasticsearch8 import Elasticsearch as Elasticsearch8
+        from elasticsearch9 import Elasticsearch as Elasticsearch9
+
+        es_versions = [
+            (Elasticsearch9, "Elasticsearch 9"),
+            (Elasticsearch8, "Elasticsearch 8"),
+            (Elasticsearch7, "Elasticsearch 7")
+        ]
+
+        for es_class, version_name in es_versions:
+            try:
+                es_client = es_class(elastic_hosts)
+                # 测试连接
+                if es_client.info():
+                    very_nb_print(f"成功连接到 {version_name}")
+                    return es_client
+            except Exception as e:
+                very_nb_print(f"尝试连接 {version_name} 失败: {e}")
+
+        raise Exception(f"Unsupported ES version: {version}")
 
     @classmethod
     def __add_task_to_bulk(cls, task):

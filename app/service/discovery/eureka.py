@@ -50,7 +50,6 @@ class Eureka(Discovery):
             # PUT /eureka/v2/apps/appID/instanceID/status?value=OUT_OF_SERVICE
             self.eureka_execute(method="PUT", params={"value": eureka_status.get(instance.enabled, "UP")},
                                 uri=f"/{registration.service_name}/{instance.ext.get('instanceId')}/status")
-        pass
 
     def get_instances(self, instance_array: List, enabled_only: bool = True) -> List[Instance]:
 
