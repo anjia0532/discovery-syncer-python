@@ -111,7 +111,9 @@ def restore_{job.replace("-", "_")}_{gateway.replace("-", "_")}():
     check_file("{job}/{gateway}/{syncer['base_name']}")
     with open("{job}/{gateway}/{syncer['base_name']}", 'r', encoding='UTF-8') as f:
         resp = httpx.put("{syncer['syncer']}/restore/{gateway}", content="\\n".join(f.readlines()),
-                         headers={{"SYNCER-API-KEY": "{syncer['syncer_api_key']}"}}, verify=False).text
+                         headers={{
+                            "SYNCER-API-KEY": "{syncer['syncer_api_key']}",
+                            "Content-Type": "application/yaml"}}, verify=False).text
         print(f"还原 {job}/{gateway}/{syncer['base_name']} 到 {syncer['syncer']}/restore/{gateway} , 结果为: {{resp}}")
 
 """)
