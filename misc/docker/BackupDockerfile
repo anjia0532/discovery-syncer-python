@@ -17,6 +17,6 @@ RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list && \
 
 RUN git config --global http.sslVerify false
 
-ADD . /opt/discovery-syncer/
+ADD ./tools/backup.py /opt/discovery-syncer/backup.py
 
 ENTRYPOINT ["python3", "/opt/discovery-syncer/backup.py", ">/dev/stdout"]
