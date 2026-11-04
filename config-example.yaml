@@ -155,3 +155,31 @@ targets:
                     },
                     "tags": ["discovery-syncer-python-auto"]
                 }
+
+# ===========================================================================
+# 订阅配置（全部可选，旧 config.yaml 不写这一段也能原样启动）
+# ---------------------------------------------------------------------------
+# 每个 target 可单独配置 subscribe 块；不写时使用以下默认值：
+#   enabled: true / mode: auto / reconcile: true / webhook: true / fallback: true
+#
+# 也可在 discovery-servers 或 gateway-servers 下显式写 version 覆盖自动探测：
+#   discovery-servers.<name>.version: 1 | 2 | 3          # nacos
+#   gateway-servers.<name>.version: v2 | v3              # apisix
+#   gateway-servers.<name>.version: 2.8.x | 3.7.1        # kong
+# 旧的 gateway-servers.<name>.config.version 写法继续兼容。
+#
+# subscribe:
+#   enabled: true
+#   mode: auto            # auto | push | webhook | poll | off(完全回退定时轮询)
+#   version: ""           # 留空 = 自动探测上游大版本
+#   udp-host: 0.0.0.0    # Nacos 1.x/2.x UDP 推送监听地址；容器需暴露该 UDP 端口
+#   udp-port: 0           # 0 = 随机端口（端口会随订阅请求带给 Nacos）
+#   debounce-ms: 500      # 同一服务连续事件的合并窗口
+#   refresh-interval: ""  # UDP 订阅续约 / 新服务发现周期，留空复用 fetch-interval
+#   reconcile-interval: "@every 5m"  # 低频全量对账兜底，留空默认 5 分钟
+#   push-timeout-sec: 0   # 0 = 按 3 倍续约周期自动判定推送失联并降级
+#   reconcile: true       # 是否保留兜底对账（防丢事件）
+#   webhook: true         # 是否附带 POST /-/notify 入站回调
+#   fallback: true        # 推送不可用时自动叠加快照 diff 增量轮询
+#   notify-token: ""      # 入站回调额外令牌（仍受 SYNCER-API-KEY 保护）
+# ===========================================================================

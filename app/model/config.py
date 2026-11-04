@@ -1,9 +1,9 @@
 import re
 from enum import Enum
-from typing import List, Dict
+from typing import Dict, List
 
 import httpx
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_yaml import parse_yaml_file_as, parse_yaml_raw_as
 
 from core.lib.logger import for_model
@@ -31,6 +31,61 @@ class GatewayType(Enum):
     APISIX = "apisix"
 
 
+class SubscribeMode(str, Enum):
+    """订阅策略。
+
+    与 ``app.subscription.core.SubscribeMode`` 取值一一对应，
+    这里独立定义是为了让配置层不反向依赖业务层。
+    """
+
+    AUTO = "auto"        # 按上游版本能力自动选择，失败自动降级（默认）
+    PUSH = "push"        # 强制原生推送（Nacos 1.x UDP / 2.x+ gRPC）
+    WEBHOOK = "webhook"  # 仅入站 HTTP 回调
+    POLL = "poll"        # 强制快照 diff 增量轮询
+    OFF = "off"          # 关闭订阅，完全回退旧版定时全量轮询（灰度对比用）
+
+
+class SubscriptionConfig(BaseModel):
+    """订阅配置。**全部字段可选且带默认值**，旧 config.yaml 无需改动即可加载。
+
+    Attributes:
+        enabled: 是否启用订阅；False 等价于 ``mode: off``。
+        mode: 订阅策略。
+        version: 显式声明上游大版本（``1``/``2``/``3`` 或完整版本号），留空自动探测。
+        udp_host / udp_port: Nacos 1.x UDP 监听地址；port=0 随机端口。
+        debounce_ms: 同服务事件合并窗口。
+        refresh_interval: UDP 订阅续约 / 新服务发现周期，留空复用 ``fetch-interval``。
+        reconcile_interval: 兜底全量对账周期，留空复用 ``fetch-interval``。
+        push_timeout_sec: 超过该秒数未收到真实推送即降级（0 表示不判定）。
+        reconcile: 是否保留低频全量对账兜底。
+        webhook: 是否附带入站 webhook receiver。
+        fallback: 推送不可用时是否自动叠加快照 diff 增量轮询。
+        notify_token: 入站 webhook 额外令牌（可选，仍受 SYNCER-API-KEY 保护）。
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = True
+    mode: SubscribeMode = SubscribeMode.AUTO
+    version: str = ""
+    udp_host: str = Field("0.0.0.0", alias="udp-host")
+    udp_port: int = Field(0, alias="udp-port", ge=0, le=65535)
+    debounce_ms: int = Field(500, alias="debounce-ms", ge=0)
+    refresh_interval: str = Field("", alias="refresh-interval")
+    reconcile_interval: str = Field("", alias="reconcile-interval")
+    push_timeout_sec: int = Field(0, alias="push-timeout-sec", ge=0)
+    reconcile: bool = True
+    webhook: bool = True
+    fallback: bool = True
+    notify_token: str = Field("", alias="notify-token")
+
+    @model_validator(mode='after')
+    def check_subscription(self) -> 'SubscriptionConfig':
+        assert self.debounce_ms >= 0, "subscribe.debounce-ms 不能为负数"
+        assert 0 <= self.udp_port <= 65535, "subscribe.udp-port 取值范围 [0, 65535]"
+        return self
+
+
 class Common(BaseModel):
     syncer_api_key: str = Field('', alias="syncer-api-key")
 
@@ -48,6 +103,8 @@ class Discovery(BaseModel):
     prefix: str = None
     host: str = None
     config: dict = None
+    # 可选：显式声明上游大版本（nacos 1/2/3）。留空则自动探测，旧配置无需改动。
+    version: str = ""
 
     @model_validator(mode='after')
     def check_discovery(self) -> 'Discovery':
@@ -56,18 +113,30 @@ class Discovery(BaseModel):
         assert len(self.host) > 0, "host 必填，注册中心地址"
         return self
 
+    @property
+    def declared_version(self) -> str:
+        """显式版本：顶层 ``version`` 优先，兼容旧的 ``config.version`` 写法。"""
+        return self.version or str((self.config or {}).get("version") or "")
+
 
 class Gateway(BaseModel):
     type: GatewayType = None
     admin_url: str = Field(None, alias="admin-url")
     prefix: str = None
     config: dict = None
+    # 可选：显式声明网关大版本（apisix v2/v3、kong 2.x/3.x）。留空自动探测。
+    version: str = ""
 
     @model_validator(mode='after')
     def check_gateways(self) -> 'Gateway':
         assert self.type is not None, "type 必填，网关类型，值为: kong, apisix"
         assert len(self.admin_url) > 0, "admin-url 必填，网关地址"
         return self
+
+    @property
+    def declared_version(self) -> str:
+        """显式版本：顶层 ``version`` 优先，兼容旧的 ``config.version`` 写法。"""
+        return self.version or str((self.config or {}).get("version") or "")
 
 
 class HealthCheck(BaseModel):
@@ -102,10 +171,13 @@ class Targets(BaseModel):
     enabled: bool = False
     exclude_service: List[str] = Field([], alias="exclude-service")
     upstream_prefix: str = Field(None, alias="upstream-prefix")
+    # 订阅化后语义变更为「兜底全量对账周期 / 健康检查周期」，字段名与默认值保持不变。
     fetch_interval: str = Field("0 0 * * * *", alias="fetch-interval")
     maximum_interval_sec: int = Field(-1, alias="maximum-interval-sec")
     config: dict = {}
     healthcheck: dict = None
+    # 新增但全可选：旧 config.yaml 不写该块时自动使用默认值（AUTO 订阅 + 兜底对账）。
+    subscribe: SubscriptionConfig = Field(default_factory=SubscriptionConfig, alias="subscribe")
 
     @model_validator(mode='after')
     def check_targets(self) -> 'Targets':

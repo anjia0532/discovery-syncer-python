@@ -373,13 +373,110 @@ targets:
     # .. 忽略其他部分
 ```
 
+## 订阅机制与多版本适配
+
+### 从轮询到订阅
+
+| | 旧版 | 新版 |
+|---|---|---|
+| 取差异方式 | 定时全量拉注册中心 + 全量拉网关，两边比对 | 上游变更事件 -> 只同步变更的**单个服务** |
+| 触发频率 | 每个 `fetch-interval` 必然全量跑一遍 | 只有真正发生变化才触发；同服务连续事件按 `debounce-ms` 合并 |
+| 无变更开销 | 每次都要拉网关 upstream | 上游快照 diff 无变化 -> 完全不触碰网关 Admin API |
+| 兜底 | 无 | 低频全量对账（默认 `@every 5m`）+ 快照 diff 增量轮询自动降级 |
+| 失联判定 | `Jobs.last_time`（只在有 diff 时刷新，易误判） | 合并订阅心跳，`/health` 新增 `subscription` 字段 |
+
+订阅层可插拔，按上游版本能力自动选择：
+
+* **Nacos 1.x** — 原生 UDP 推送：本地起 UDP 接收端，周期性重发带 `udpPort` 的
+  `GET /nacos/v1/ns/instance/list` 完成订阅续约与新服务发现。
+* **Nacos 2.x** — 官方订阅是 gRPC(9848)。服务端保留 UDP 兼容层，因此优先尝试 UDP；
+  若 `grpc_stream` 注入了真实双向流则走 gRPC；否则自动降级为快照 diff 增量轮询。
+* **Nacos 3.x** — **不再兼容 v1/v2 HTTP OpenAPI**，改用 `/nacos/v3/admin/*`（范围查询）
+  与 `/nacos/v3/client/*`（单服务），默认命名空间由 `""` 变为 `public`，
+  且客户端 API 不支持「查询全部服务列表」。gRPC 是唯一订阅传输，
+  未注入 gRPC 流时自动降级为增量轮询 + 入站 webhook。
+* **Eureka** — 无服务端 push，统一走快照 diff 增量轮询。
+* **任意版本** — 可叠加 `POST /-/notify` 入站回调，由 CI/CD 或外部监听脚本主动推送。
+
+> 说明：Nacos 2.x/3.x 的 gRPC 订阅协议是基于 protobuf 的双向流。为避免交付一个
+> 无法验证的半成品协议客户端，`NacosGrpcSubscription` 采用「可注入流」设计：
+> 接入官方 `nacos-sdk-python` 或自研 gRPC 客户端后把事件迭代器注入即可获得真实 push；
+> 未注入时明确标记 `degraded` 并自动启用兜底，不会静默丢事件。
+
+### 版本能力矩阵
+
+| 产品 | 版本 | HTTP API | 推送通道 | 列表响应 | 关键差异 |
+|---|---|---|---|---|---|
+| Nacos | 1.x | `/nacos/v1/` | UDP | `catalog/list` | `ns/catalog/*`，订阅参数 `udpPort` |
+| Nacos | 2.x | `/nacos/v1/`（兼容） | gRPC(主端口+1000) | `catalog/list` | 仅临时实例可订阅；`8848/9848/9849` 需同时放行 |
+| Nacos | 3.x | `/nacos/v3/admin/`、`/v3/client/` | gRPC（唯一） | `list/total` | 不兼容 v1/v2；默认命名空间 `public`；client API 不支持全量服务列表 |
+| APISIX | 2.x | `/apisix/admin/`（9080） | — | `action/count/node.nodes[]` | `ssl`/`proto` 单数 |
+| APISIX | 3.x | `/apisix/admin/`（9180） | — | `list[]/total` 或 `key/value` | `ssls`/`protos` 复数 |
+| Kong | 2.x | `/`（8001） | — | `data[]` | `POST /targets` 可更新已有 target |
+| Kong | 3.x | `/`（8001） | — | `data[]` | **`POST` 只能新建、重复返回 409，更新必须 `PUT /targets/{target}`** |
+
+版本判定顺序：**显式配置优先**（`subscribe.version` / `discovery-servers.<n>.version` /
+`gateway-servers.<n>.version`，旧的 `config.version` 继续兼容）→ 自动探测
+（Nacos `v3/v1 console/server/state` + 9848 端口；APISIX 响应形态；Kong 根路径 `version`）。
+探测失败一律回落到最保守的已知版本，不会让旧配置启动失败。
+
+### 配置兼容
+
+**旧 `config.yaml` 一行不改即可升级**：所有新增字段都是可选的并带默认值。
+`fetch-interval` / `maximum-interval-sec` / `healthcheck` / `config.template` /
+`exclude-service` / `upstream-prefix` 语义保留；订阅模式下 `fetch-interval` 转作
+健康检查与增量轮询周期，全量对账另由 `subscribe.reconcile-interval` 控制（默认 5 分钟）。
+
+需要完全灰度对比时可设置 `subscribe.enabled: false` 或 `subscribe.mode: off`，
+行为与旧版定时全量轮询一致。完整可选项见 `config-example.yaml` 末尾注释块。
+
+### 新增运维接口
+
+| 路径 | 用途 |
+|---|---|
+| `POST /-/notify?discovery=nacos1` | 入站变更回调，body 支持 `serviceName` 或 `services[]`、`groupName`、`namespaceId` |
+| `GET /-/subscriptions` | 各作业订阅策略、版本、Provider 健康、降级状态、事件计数 |
+| `GET /-/versions` | 各注册中心/网关的版本探测结果与能力矩阵命中情况 |
+| `GET /health` | 增加 `subscription` 字段，失联判定改为订阅心跳 |
+
+所有接口仍由 `SYNCER-API-KEY` 中间件保护；`subscribe.notify-token` 可作为回调额外令牌。
+
+### 多版本镜像验证
+
+`tests/integration/docker-compose.matrix.yml` 提供完整版本矩阵：
+Nacos `1.4.6` / `2.5.x` / `3.x`、APISIX `2.15` / `3.x`、Kong `2.8` / `3.7`。
+
+```bash
+# 在 WSL / Linux 且可运行 docker 的环境执行
+cd tests/integration
+./run_matrix.sh up        # 拉起矩阵并等待健康检查
+./run_matrix.sh probe     # 打印版本探测结果与 /-/versions 对照
+./run_matrix.sh test      # 逐个版本跑注册实例 -> 变更 -> 校验网关 upstream
+./run_matrix.sh down      # 清理
+```
+
+验证项包括：版本探测与镜像大版本一致、APISIX 2.x `node.nodes[]` vs 3.x `list/total`
+的响应归一化、upstream `PUT` + `PATCH /nodes` 实际生效，以及 Kong 3.x 重复 `POST /targets`
+返回 409 而 `PUT` 幂等成功（2.x 则 `POST` 可连续更新）。
+
+**无 Docker 环境的等价验证**（本地协议级 mock，覆盖完全相同的检查项）：
+
+```bash
+python3 tests/integration/run_local_matrix.py     # 需 pip install httpx
+```
+
+> 若运行环境使用 Windows + WSL，请注意 WorkBuddy 沙箱默认把 `wsl.exe` 列入程序黑名单，
+> 需在「安全中心 → 命令安全 → 程序黑名单」移除后才能在会话内直接调用；
+> 也可直接在自己的 WSL 终端里执行上述脚本，结果等价。
+> 本机若未安装 Docker Desktop，同样只能用 `run_local_matrix.py` 做协议级验证。
+
 ## 待优化点
 
 1. 已解决 ~~目前的同步任务是串行的，如果待同步的量比较大，或者同步时间窗口设置的特别小的情况下，会导致挤压~~
 
 2. 已解决 ~~不支持自定义同步插件，不利于自行扩展~~
 
-3. 同步机制目前是基于定时轮询，效率比较低，有待优化，比如增加缓存开关，上游注册中心与缓存比对没有差异的情况下，不去拉取/变更下游网关的upstream信息，或者看看注册中心支不支持变动主动通知机制等。
+3. 已解决 ~~同步机制目前是基于定时轮询，效率比较低，有待优化，比如增加缓存开关，上游注册中心与缓存比对没有差异的情况下，不去拉取/变更下游网关的upstream信息，或者看看注册中心支不支持变动主动通知机制等。~~ 已改为「订阅上游 + 事件驱动单服务同步 + 低频全量对账兜底」，并增加多版本能力矩阵，详见下文《订阅机制与多版本适配》。
 
 ## 鸣谢
 

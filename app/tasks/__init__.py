@@ -9,3 +9,5 @@ task_syncer.syncer.consume()
 task_syncer.reload.consume()
 task_syncer.health_check.consume()
 task_syncer.instance_health_check.consume()
+# 事件驱动的单服务同步消费者
+task_syncer.sync_service.consume()

@@ -23,6 +23,23 @@ class Eureka(Discovery):
     def __init__(self, config):
         super().__init__(config)
 
+    def _cap(self):
+        """Eureka 只有一代 API；能力矩阵仍统一登记，便于 ``/-/versions`` 展示。"""
+        if self._capability is None:
+            from app.compat import Product, capability
+
+            self._capability = capability(Product.EUREKA, 1)
+            self._version_evidence = "eureka 无多版本 HTTP API 分叉"
+        return self._capability
+
+    def detect_version(self):
+        return self._cap()
+
+    @property
+    def supports_push(self) -> bool:
+        """Eureka 没有服务端 push，订阅层自动改用快照 diff 增量轮询。"""
+        return False
+
     def get_all_service(self, config: dict, enabled_only: bool = True) -> List[Service]:
         # https://github.com/Netflix/eureka/wiki/Eureka-REST-operations
         resp = self.eureka_execute(uri="/")

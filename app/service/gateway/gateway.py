@@ -7,6 +7,19 @@ from app.model.syncer_model import Instance
 class Gateway(object):
     def __init__(self, config):
         self._config = config
+        self._capability = None
+        self._version_evidence = ""
+
+    # -- 版本能力（子类填充，供 /-/versions 与订阅装配统一读取） ------------
+    @property
+    def capability(self):
+        """版本能力对象；未探测返回 ``None``。"""
+        return self._capability
+
+    @property
+    def version_evidence(self) -> str:
+        """版本判定依据文本。"""
+        return self._version_evidence
 
     @abstractmethod
     def get_service_all_instances(self, target: dict, upstream_name: str = None) -> List[Instance]:

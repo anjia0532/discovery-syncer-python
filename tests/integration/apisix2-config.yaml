@@ -1,0 +1,14 @@
+apisix:
+  node_listen: 9080
+  enable_admin: true
+  admin_key:
+    - name: admin
+      key: edd1c9f034335f136f87ad84b625c8f1
+      role: admin
+  allow_admin:
+    - 0.0.0.0/0
+etcd:
+  host:
+    - "http://etcd2:2379"
+  prefix: "/apisix"
+  timeout: 30

@@ -74,17 +74,31 @@ def health():
         enginex, sqla_helper = db.get_sqla_helper()
         jobs = Jobs.query_all(sqla_helper)
         current = datetime.now()
+        # 订阅模式下不能只看 Jobs.last_time：旧实现只在「有 diff」时才刷新它，
+        # 事件驱动/无变更期间会被误判为失联。这里合并订阅心跳作为最后活跃时间。
+        from app.tasks.task_syncer import get_manager
+
+        manager = get_manager()
         result = {
             "total": len(jobs),
             "running": 0,
             "lost": 0,
             "details": [],
             "status": "UNKNOWN",
-            "uptime": timedelta(seconds=(current - start).total_seconds()).__str__()
+            "uptime": timedelta(seconds=(current - start).total_seconds()).__str__(),
+            "subscription": {
+                tid: {"mode": s["mode"], "version": s["version"],
+                      "alive": s["alive"], "degraded": s["degraded"]}
+                for tid, s in manager.all_status().items()
+            },
         }
         default_last_time = current - timedelta(days=365)
         for job in jobs:
-            diff = (current - (job.last_time or default_last_time)).total_seconds()
+            heartbeat_ts = manager.last_heartbeat(job.target_id)
+            heartbeat_dt = datetime.fromtimestamp(heartbeat_ts) if heartbeat_ts else None
+            candidates = [t for t in (job.last_time, heartbeat_dt) if t is not None]
+            last_active = max(candidates) if candidates else default_last_time
+            diff = (current - last_active).total_seconds()
             if 0 < job.maximum_interval_sec < diff:
                 result["lost"] += 1
                 result["details"].append(

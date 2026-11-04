@@ -38,6 +38,15 @@ async def startup_event():
     reload()
     LOGGER.info(f'config path is : {args.config}')
 
+
+@APP.on_event('shutdown')
+async def shutdown_event():
+    """优雅停机：停止订阅线程、释放 UDP 端口，避免热重载/容器退出时残留。"""
+    from app.tasks.task_syncer import get_manager
+
+    get_manager().stop_all()
+    LOGGER.info('subscription manager stopped')
+
 # 加载核心模块
 init_core_modules(APP)
 # 注册自定义错误

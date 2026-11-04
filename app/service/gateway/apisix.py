@@ -94,31 +94,68 @@ class Apisix(Gateway):
     def __init__(self, config):
         super().__init__(config)
         self.service_name_map = {}
-        self.VERSION = config.config.get("version", APISIX_V2)
+        self._capability = None
+        self._version_evidence = ""
+        declared = str((config.config or {}).get("version") or APISIX_V2).lower()
+        self.VERSION = APISIX_V3 if declared in ("3", "v3", "3.x") else APISIX_V2
+
+    # -- 版本能力 -----------------------------------------------------------
+    def _cap(self):
+        """惰性探测 APISIX 2.x / 3.x；显式 ``version`` 优先，避免额外 HTTP 往返。"""
+        if self._capability is None:
+            from app.compat import Product, detect
+
+            cap, evidence = detect(
+                Product.APISIX,
+                declared=getattr(self._config, "declared_version", "") or None,
+                admin_url=self._config.admin_url,
+                prefix=self._config.prefix or "/apisix/admin/",
+                api_key=(self._config.config or {}).get("X-API-KEY", ""),
+            )
+            self._capability = cap
+            self._version_evidence = evidence
+            self.VERSION = APISIX_V3 if cap.major >= 3 else APISIX_V2
+            logger.info("APISIX 版本判定: %s (%s)", cap.label, evidence)
+        return self._capability
+
+    @property
+    def capability(self):
+        return self._capability
+
+    @property
+    def version_evidence(self) -> str:
+        return self._version_evidence
 
     def get_service_all_instances(self, target: dict, upstream_name: str = None) -> List[Instance]:
         # 如果 target.upstream_prefix 存在，则使用 upstream_prefix-upstream_name，否则直接使用 upstream_name
         upstream_name = self.get_upstream_name(target, upstream_name)
-        # 如果upstream_name为空，则获取所有upstream的实例
-        uri = self.service_name_map.get(upstream_name, fetch_all_upstream)
+        # 订阅模式下只同步单个服务，优先按 id 单点读取，避免像旧实现那样拉全量 upstreams。
+        uri = self.service_name_map.get(upstream_name) or f"{fetch_all_upstream}/{upstream_name}"
 
         resp = self.apisix_execute("GET", uri, {})
+        items = resp.get("list") or []
+        if not items:
+            # 兼容 id 与 name 不一致的历史数据：回落全量列表再匹配。
+            resp = self.apisix_execute("GET", fetch_all_upstream, {})
+            items = resp.get("list") or []
         instances = []
-        if "list" not in resp:
-            resp["list"] = [resp]
-        for upstream in resp.get("list", []):
-            self.service_name_map[
-                upstream.get("value").get("name")] = f"{fetch_all_upstream}/{upstream.get('value').get('id')}"
-            if upstream_name != upstream.get("value").get('name'): continue
-
-            if isinstance(upstream.get("value").get("nodes"), list):
-                for node in upstream.get("value").get("nodes"):
+        for upstream in items:
+            value = upstream.get("value") or upstream
+            name = value.get("name")
+            if name:
+                self.service_name_map[name] = f"{fetch_all_upstream}/{value.get('id') or name}"
+            if upstream_name != name and len(items) > 1:
+                continue
+            nodes = value.get("nodes")
+            if isinstance(nodes, list):
+                for node in nodes:
                     instances.append(Instance(ip=node.get("host"), port=node.get("port"), weight=node.get("weight")))
-            elif isinstance(upstream.get("value").get("nodes"), dict):
-                for addr, weight in upstream.get("value").get("nodes").items():
-                    host, port = addr.split(":")
-                    instances.append(Instance(ip=host, port=port, weight=weight))
-            break
+            elif isinstance(nodes, dict):
+                for addr, weight in nodes.items():
+                    host, _, port = addr.rpartition(":")
+                    instances.append(Instance(ip=host, port=int(port), weight=weight))
+            if len(items) == 1:
+                break
         return instances
 
     def sync_instances(self, target: dict, upstream_name: str, diff_ins: list, instances: list):
@@ -273,15 +310,24 @@ class Apisix(Gateway):
 
         resp = json.loads(resp_txt)
 
-        if "error_msg" in resp:
+        if isinstance(resp, dict) and "error_msg" in resp:
             resp = {"list": []}
 
         if "plugins/list" == uri:
-            plugins = {"list": [{"name": plugin} for plugin in resp]}
-            resp = plugins
+            return {"list": [{"name": plugin} for plugin in resp]}
 
-        if APISIX_V3 != self._config.config.get('version') and "list" not in resp:
-            resp["list"] = resp.get("node", {}).get("nodes", [])
-            if "value" in resp.get("node", {}):
-                resp["list"].append(resp.get("node", {}))
+        if not isinstance(resp, dict):
+            return {"list": resp if isinstance(resp, list) else []}
+
+        # 统一按能力矩阵归一化：2.x 包在 node.nodes[]，3.x 单点响应是 {key,value}。
+        if "list" not in resp:
+            cap = self._cap()
+            if cap.major <= 2:
+                from app.compat import ListShape, normalize_response
+
+                resp["list"] = normalize_response(resp, ListShape.NODE)
+            elif "value" in resp:
+                resp["list"] = [resp]
+            else:
+                resp["list"] = []
         return resp
