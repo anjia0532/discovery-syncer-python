@@ -62,6 +62,10 @@ class Kong(Gateway):
                         cap.label, evidence, cap.target_write)
         return self._capability
 
+    def detect_version(self):
+        """探测并返回版本能力（供 /-/versions 与订阅装配统一调用）。"""
+        return self._cap()
+
     @property
     def capability(self):
         return self._cap()
@@ -104,26 +108,20 @@ class Kong(Gateway):
             self.service_name_map[upstream_name] = True
 
         tpl = Template(default_kong_target_template)
-        write_method = self.target_write
         for instance in diff_ins:
-            data = None
             if instance.enabled:
                 data = tpl.substitute(ip=instance.ip, port=instance.port, weight=instance.weight)
-                if write_method == "PUT":
-                    # 3.x: 直接 upsert 到具体 target 路径，避免 POST 409 的额外往返。
-                    target_uri = f"upstreams/{upstream_name}/targets/{instance.ip}:{instance.port}"
-                    self.kong_execute("PUT", target_uri, {}, data)
-                else:
-                    # 2.x: POST 到集合即可创建/更新。
-                    target_uri = f"upstreams/{upstream_name}/targets/"
-                    resp = self.kong_execute("POST", target_uri, {}, data)
-                    if resp.status_code == 409:
-                        # 少数 2.8 补丁版已具备 PUT 语义，兜底兼容。
-                        self.kong_execute("PUT", f"upstreams/{upstream_name}/targets/{instance.ip}:{instance.port}",
-                                          {}, data)
+                # 真实镜像验证：Kong 3.x 的 POST /targets 只能创建，重复返回 409；
+                # 而 PUT /targets/{target} 只更新已存在的 target（不存在返回 404），
+                # 没有 upsert 语义。2.x 的 POST 可 upsert。
+                # 因此统一「先 POST，409 再 PUT」——2.x/3.x 都正确。
+                resp = self.kong_execute("POST", f"upstreams/{upstream_name}/targets/", {}, data)
+                if resp.status_code == 409:
+                    self.kong_execute("PUT", f"upstreams/{upstream_name}/targets/{instance.ip}:{instance.port}",
+                                      {}, data)
             else:
-                target_uri = f"upstreams/{upstream_name}/targets/{instance.ip}:{instance.port}"
-                self.kong_execute("DELETE", target_uri, {}, None)
+                self.kong_execute("DELETE", f"upstreams/{upstream_name}/targets/{instance.ip}:{instance.port}",
+                                  {}, None)
 
     def fetch_admin_api_to_file(self, file_name: str) -> Tuple[str, str]:
         # https://docs.konghq.com/gateway/3.6.x/production/deployment-topologies/db-less-and-declarative-config/

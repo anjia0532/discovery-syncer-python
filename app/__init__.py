@@ -19,8 +19,9 @@ LOGGER = logger.get('FASTAPI_APP')
 FastAPI application main module
 The APP instance will be launched by uvicorn instance in ${workspaceFolder}/main.py
 """
+# 注意：FastAPI 没有 env 参数，原先把 settings.ENV 传进去会直接 TypeError
+# 导致应用无法启动（真实启动验证才发现）。这里只传 FastAPI 支持的字段。
 FASTAPI_CFG = {
-    'env': settings.ENV,
     'title': settings.TITLE,
     'description': settings.DESCRIPTION,
     'version': settings.VERSION,

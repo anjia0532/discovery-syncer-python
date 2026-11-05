@@ -21,6 +21,13 @@ class Gateway(object):
         """版本判定依据文本。"""
         return self._version_evidence
 
+    def detect_version(self):
+        """探测并设置版本能力；默认无操作，子类（apisix/kong）覆写。
+
+        ``/-/versions`` 与订阅装配都通过本方法取能力，保证任意网关实现都能被探测。
+        """
+        return self._capability
+
     @abstractmethod
     def get_service_all_instances(self, target: dict, upstream_name: str = None) -> List[Instance]:
         pass

@@ -26,6 +26,10 @@ case "${1:-help}" in
     "$PY" "$HERE/matrix_check.py" probe
     ;;
   test)
+    # 容器端口就绪 != 服务就绪：Nacos/APISIX/Kong 还需要连上 etcd/postgres，
+    # 这里再等一段时间，避免契约阶段出现 Connection refused。
+    "$PY" "$HERE/matrix_check.py" wait
+    sleep 45
     "$PY" "$HERE/matrix_check.py" test
     ;;
   down)

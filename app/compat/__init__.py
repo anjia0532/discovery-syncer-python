@@ -301,18 +301,21 @@ def probe_nacos(
     hostname = parsed.hostname or ""
     main_port = parsed.port or (443 if parsed.scheme == "https" else 8848)
 
-    for path in ("/nacos/v3/console/server/state", "/v3/console/server/state"):
+    # 1) Nacos 3.x：客户端 API 存在。无参调用会返回 400（参数校验）或 403（需鉴权），
+    #    而 1.x/2.x 对同一路径返回 404，因此这是最可靠的 3.x 判据。
+    #    注意：3.x 的 /nacos/v3/console/server/state 实测为 404，不能用作判据。
+    for path in ("/nacos/v3/client/ns/instance/list", "/nacos/v3/admin/ns/service/list"):
         try:
             resp = http_get(f"{base}{path}", {}, timeout)
-            if getattr(resp, "status_code", 0) == 200:
-                payload = resp.json() if hasattr(resp, "json") else {}
-                major = _version_from_payload(payload)
-                if not major:
-                    major = 3  # v3 路径存在即视为 3.x
-                return 3, f"v3 state endpoint {path} -> {major}"
+            status = getattr(resp, "status_code", 0)
+            if status in (200, 400, 401, 403):
+                return 3, f"v3 API reachable with status {status} -> 3.x"
         except Exception:  # noqa: BLE001 - 探测失败继续下一种
             pass
 
+    # 2) v1/v2 state 端点。实测差异：
+    #    1.x -> {"version":"1.4.6","standalone_mode":...}
+    #    2.x -> {"defaultMaxSize":...,"auth_system_type":"nacos",...}（没有 version 字段）
     for path in ("/nacos/v1/console/server/state", "/nacos/v2/console/server/state"):
         try:
             resp = http_get(f"{base}{path}", {}, timeout)
@@ -320,7 +323,10 @@ def probe_nacos(
                 payload = resp.json() if hasattr(resp, "json") else {}
                 major = _version_from_payload(payload)
                 if major:
-                    return min(major, 2), f"v1/v2 state endpoint {path} -> {major}"
+                    return min(major, 2), f"state endpoint {path} version -> {major}"
+                if isinstance(payload, dict) and (
+                        "auth_system_type" in payload or "defaultMaxSize" in payload):
+                    return 2, f"state endpoint {path} has 2.x field set -> 2.x"
         except Exception:  # noqa: BLE001
             pass
 

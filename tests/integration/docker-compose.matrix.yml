@@ -55,7 +55,7 @@ services:
 
   # ---------------- APISIX 2.x + etcd 3.4 (v2 API) ----------------
   etcd2:
-    image: bitnami/etcd:3.4.27
+    image: bitnamilegacy/etcd:3.4.27
     container_name: ds-etcd2
     environment:
       ALLOW_NONE_AUTHENTICATION: "yes"
@@ -63,7 +63,7 @@ services:
       ETCD_ADVERTISE_CLIENT_URLS: "http://etcd2:2379"
       ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
   apisix2:
-    image: apache/apisix:2.15-alpine
+    image: apache/apisix:2.15.0-debian
     container_name: ds-apisix2
     depends_on: [etcd2]
     volumes:
@@ -73,14 +73,14 @@ services:
 
   # ---------------- APISIX 3.x + etcd 3.5 ----------------
   etcd3:
-    image: bitnami/etcd:3.5.16
+    image: bitnamilegacy/etcd:3.5.16
     container_name: ds-etcd3
     environment:
       ALLOW_NONE_AUTHENTICATION: "yes"
       ETCD_ADVERTISE_CLIENT_URLS: "http://etcd3:2379"
       ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
   apisix3:
-    image: apache/apisix:3.9.1-debian
+    image: apache/apisix:3.9.0-debian
     container_name: ds-apisix3
     depends_on: [etcd3]
     volumes:
@@ -106,6 +106,9 @@ services:
       KONG_PG_USER: kong
       KONG_PG_PASSWORD: kong
       KONG_PG_DATABASE: kong
+      # Kong 默认 admin_listen=127.0.0.1:8001，容器外不可达，必须显式放开
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
     command: kong migrations bootstrap
     restart: on-failure
   kong2:
@@ -136,6 +139,9 @@ services:
       KONG_PG_USER: kong
       KONG_PG_PASSWORD: kong
       KONG_PG_DATABASE: kong
+      # Kong 默认 admin_listen=127.0.0.1:8001，容器外不可达，必须显式放开
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
     command: kong migrations bootstrap
     restart: on-failure
   kong3:

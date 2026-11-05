@@ -130,47 +130,65 @@ def _apisix_contract(base: str, major: int) -> Dict[str, Any]:
 
 
 def _kong_contract(base: str, major: int) -> Dict[str, Any]:
-    """验证 Kong 2.x/3.x target 写入方法差异。
+    """验证 Kong 2.x/3.x target 写入语义（按真实镜像实测行为）。
 
-    3.x 连续两次写同一 target 必须用 PUT；用 POST 第二次会得到 409。
-    这里同时验证「正确方法成功」与「错误方法在 3.x 确实冲突」，
-    以证明版本适配不是多余的。
+    实测语义：
+    * 2.x: POST /targets 可 upsert —— 重复 POST 仍成功。
+    * 3.x: POST /targets 只能创建，重复返回 409；
+           PUT /targets/{target} 只更新已存在的 target，不存在返回 404。
+    因此客户端统一「先 POST，409 再 PUT」在两条版本都正确。
     """
     name = "ds-matrix-test"
     target = "127.0.0.1:18080"
     httpx.put(f"{base}/upstreams/{name}", json={"name": name}, timeout=5)
-    correct = "POST" if major == 2 else "PUT"
-    wrong = "PUT" if major == 2 else "POST"
-
-    url_correct = (f"{base}/upstreams/{name}/targets" if correct == "POST"
-                   else f"{base}/upstreams/{name}/targets/{target}")
+    # 清理上一次运行残留的 target，否则 POST 会因已存在返回 409，干扰首轮判定
+    httpx.delete(f"{base}/upstreams/{name}/targets/{target}", timeout=5)
     body = {"target": target, "weight": 100}
-    first = httpx.request(correct, url_correct, json=body, timeout=5)
-    second = httpx.request(correct, url_correct, json=body, timeout=5)
 
-    url_wrong = (f"{base}/upstreams/{name}/targets" if wrong == "POST"
-                 else f"{base}/upstreams/{name}/targets/{target}")
-    wrong_status = None
-    if major == 3:
-        httpx.request(wrong, url_wrong, json=body, timeout=5)
-        wrong_status = httpx.request(wrong, url_wrong, json=body, timeout=5).status_code
+    created = httpx.post(f"{base}/upstreams/{name}/targets", json=body, timeout=5)
+    second_post = httpx.post(f"{base}/upstreams/{name}/targets", json=body, timeout=5)
+    updated = httpx.put(f"{base}/upstreams/{name}/targets/{target}",
+                        json={"target": target, "weight": 200}, timeout=5)
+    missing = httpx.put(f"{base}/upstreams/{name}/targets/127.0.0.9:9999",
+                        json={"target": "127.0.0.9:9999", "weight": 1}, timeout=5)
 
     listing = httpx.get(f"{base}/upstreams/{name}/targets", timeout=5).json()
+    targets = [t.get("target") for t in listing.get("data", [])]
+    if major >= 3:
+        ok = (created.status_code < 400 and second_post.status_code == 409
+              and updated.status_code < 400 and missing.status_code == 404
+              and target in targets)
+    else:
+        ok = (created.status_code < 400 and second_post.status_code < 400
+              and target in targets)
     return {
         "version": httpx.get(f"{base}/", timeout=5).json().get("version"),
-        "correct_method": correct, "first_status": first.status_code,
-        "second_status": second.status_code,
-        "wrong_method_second_status_on_3x": wrong_status,
-        "targets": [t.get("target") for t in listing.get("data", [])],
-        "ok": first.status_code < 400 and second.status_code < 400
-              and target in [t.get("target") for t in listing.get("data", [])],
+        "post_create": created.status_code,
+        "post_again": second_post.status_code,
+        "put_update": updated.status_code,
+        "put_missing": missing.status_code,
+        "targets": targets,
+        "ok": ok,
     }
+
+
+def probe_with_retry(attempts: int = 3, delay: float = 8.0) -> Dict[str, Any]:
+    """端口就绪 != 服务就绪（Kong/APISIX 首次启动较慢），失败时重试。"""
+    report = probe()
+    for index in range(1, attempts):
+        failures = [k for k, v in report.items() if not v.get("ok")]
+        if not failures:
+            break
+        print(f"probe round {index} failures={failures}, retrying in {delay}s ...", file=sys.stderr)
+        time.sleep(delay)
+        report = probe()
+    return report
 
 
 def run(mode: str) -> int:
     if mode == "wait":
         return 0 if wait_ready() else 1
-    report = probe()
+    report = probe_with_retry()
     if mode == "test":
         for label, base, major, _port in MATRIX["apisix"]:
             try:

@@ -118,6 +118,10 @@ class Apisix(Gateway):
             logger.info("APISIX 版本判定: %s (%s)", cap.label, evidence)
         return self._capability
 
+    def detect_version(self):
+        """探测并返回版本能力（供 /-/versions 与订阅装配统一调用）。"""
+        return self._cap()
+
     @property
     def capability(self):
         return self._capability

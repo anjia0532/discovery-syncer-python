@@ -178,15 +178,15 @@ class SubscriptionManager:
         common = dict(target_id=spec.target_id, discovery=spec.discovery, emit=emit, logger=self.log)
         if mode == SubscribeMode.WEBHOOK:
             return [WebhookSubscription(**common)]
-        if mode == SubscribeMode.POLL:
-            return [self._make_polling(spec, emit)]
 
         transport = spec.push_transport
         if mode == SubscribeMode.PUSH and transport not in ("udp", "grpc"):
             transport = "udp" if spec.major == 1 else "grpc"
 
         providers: List[SubscriptionProvider] = []
-        if transport == "udp" and spec.send_subscribe is not None:
+        if mode == SubscribeMode.POLL:
+            providers.append(self._make_polling(spec, emit))
+        elif transport == "udp" and spec.send_subscribe is not None:
             providers.append(NacosUdpSubscription(
                 **common,
                 list_services=spec.list_services,
@@ -207,6 +207,8 @@ class SubscriptionManager:
         # 无 push 能力（Eureka / 网关侧）时，至少保证有增量轮询。
         if not providers:
             providers.append(self._make_polling(spec, emit))
+        # webhook 是**叠加**通道：即使主通道是 poll/push，也允许外部回调触发同步。
+        # 注意不能写成提前 return，否则 poll/push 模式下 webhook 会缺失（实测踩过）。
         if spec.webhook_enabled and not any(p.kind == ProviderKind.WEBHOOK for p in providers):
             providers.append(WebhookSubscription(**common))
         return providers
