@@ -1,6 +1,6 @@
 ##########################
 # Build the release image.
-FROM python:3.12-slim-bullseye
+FROM python:3.12-slim-bookworm
 LABEL MAINTAINER="AnJia <anjia0532@gmail.com>"
 
 ENV PYTHONDONTWRITEBYTECODE=1

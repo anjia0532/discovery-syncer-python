@@ -1,7 +1,7 @@
 ##########################
 # Build the backup image.
 # 用于从 syncer 备份网关配置到 git，支持 kubectl port-forward 连接 K8s 内的 syncer。
-FROM python:3.11-slim-bullseye
+FROM python:3.12-slim-bookworm
 LABEL MAINTAINER="AnJia <anjia0532@gmail.com>"
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -20,7 +20,7 @@ WORKDIR /opt/discovery-syncer/
 RUN pip install -i https://mirrors.aliyun.com/pypi/simple --no-cache-dir --upgrade GitPython httpx
 
 # 安装 git / curl / ca-certificates。
-# 刻意**不替换 apt 源**：原实现把 deb.debian.org 换成 mirrors.ustc.edu.cn，
+# 刻意**不默认替换 apt 源**：原实现把 deb.debian.org 换成 mirrors.ustc.edu.cn，
 # 该镜像站在 GitHub Actions runner（境外 IP）上会让 apt-get update 失败
 # （exit 100），从而拖垮整个备份镜像构建。Debian 官方源在 runner 上速度足够。
 # 若在国内网络构建，可通过构建参数换源：
@@ -34,7 +34,9 @@ RUN if [ -n "$APT_MIRROR" ]; then \
         sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
       fi; \
     fi; \
-    apt-get update && \
+    apt-get -o Acquire::Retries=5 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 update && \
     apt-get install -y --no-install-recommends git curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
