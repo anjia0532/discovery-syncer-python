@@ -9,25 +9,29 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v3.0.0
+docker run anjia0532/discovery-syncer-python:v3.0.1
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
 `-c http://xxxxx/nacos/v1/cs/configs?tenant=public&group=DEFAULT_GROUP&dataId=discovery-syncer.yaml` ,便于管理
 
-**运行时依赖（已简化）**
+**运行时依赖（默认零中间件）**
 
-自 v3 起已移除 funboost 与 Redis：任务执行改为进程内 `ThreadPoolExecutor`
+自 v3 起已移除 funboost：任务执行改为进程内 `ThreadPoolExecutor`
 （`app/runtime/taskbus.py`），定时调度改为本地 APScheduler + MemoryJobStore
-（`app/runtime/scheduler.py`）。**不再需要任何外部中间件**，一个容器即可运行。
+（`app/runtime/scheduler.py`）。**单副本部署不需要任何外部中间件**，一个容器即可运行。
 
-> **单副本约束**：服务持有内存客户端字典、内存订阅管理器、UDP socket 与 SQLite
-> 任务库，且去掉了 Redis 分布式锁，必须以单副本运行（K8s `replicas: 1`）。
-> 如需多副本 HA，需先外置状态并引入 leader 选举，属于另一量级的改造。
+> **单副本部署**（默认）：服务持有内存客户端字典、内存订阅管理器、UDP socket 与
+> SQLite 任务库，请以 `replicas: 1` 运行。不连接 Redis。
 
-历史说明：v2.7.0 曾引入 Redis 解决内存增长与任务阻塞问题（v2.6.13 及以前无 Redis）。
-现在通过「订阅事件去抖 + 5 分钟全量对账兜底」从根本上降低了队列压力，
-消息队列与分布式锁都不再必要。
+> **多副本部署**（v3.0.1 起，可选）：配置 `cluster.enabled: true` + `redis-url`，
+> 各副本通过 Redis 租约选举 leader，**只有 leader 装配订阅与定时作业并写网关**，
+> 其余副本待命并在 leader 失联时自动接管（TTL 到期，默认 30s；优雅停机则立即释放）。
+> 详见下文《集群模式（多副本）》。
+
+历史说明：v2.7.0 曾引入 Redis 做分布式任务队列；v3.0.0 去掉后通过
+「订阅事件去抖 + 5 分钟全量对账兜底」降低队列压力；v3.0.1 重新引入 Redis，
+但**仅用于多副本 leader 选举**，且默认关闭。
 
 ### 配置文件
 
@@ -591,6 +595,90 @@ release.yml 在打 tag 前自动调用，也可本地手动运行：
 ```bash
 python3 scripts/gen_changelog.py --version 3.0.0
 ```
+
+## 集群模式（多副本）
+
+v3.0.1 新增，**默认关闭**。单副本部署不受任何影响，也不连接 Redis。
+
+### 为什么需要
+
+本服务持大量进程内状态（HTTP 客户端、订阅 Provider、UDP socket、APScheduler 作业表）。
+多副本同时运行会**重复写网关**：每个副本各自收推送、各自同步同一个 upstream。
+集群模式用 **Redis 租约选举**保证同一时刻只有一个副本（leader）在干活。
+
+### 快速开始
+
+```yaml
+cluster:
+  enabled: true
+  redis-url: "redis://:password@127.0.0.1:6379/0"
+  key-prefix: discovery-syncer
+  lock-ttl-sec: 30          # 租约 TTL，副本崩溃后最多 30s 被接管
+  renew-interval-sec: 10    # 续约周期（建议 <= TTL/3）
+  require-redis: true       # 生产集群建议 true：Redis 挂了就退出，避免脑裂
+```
+
+K8s 侧把 `replicas` 调到 2+ 即可，无需改动探针配置。
+
+### 工作原理
+
+| 环节 | 行为 |
+|---|---|
+| 抢锁 | `SET <prefix>:leader <instance-id> NX PX <ttl>`，原子互斥 |
+| 续约 | Lua 脚本「校验持有者 + `PEXPIRE`」，**不会把别人的锁续上** |
+| 释放 | 停机时 Lua「校验持有者 + `DEL`」，**不会误删新任 leader 的锁** |
+| 接管 | leader 崩溃不再续约 → TTL 到期 → follower 下次轮询抢锁成功 |
+| 角色切换 | leader 装配订阅/定时作业；follower 全部停掉，只保留客户端待命 |
+
+### 角色与健康检查
+
+| 角色 | 是否写网关 | `/health` |
+|---|---|---|
+| `leader` | ✅ 装配订阅 + 定时作业 | `UP`（按作业心跳判定） |
+| `follower` | ❌ 零订阅、零作业 | `UP`（只要 Redis 连通），**不会被 K8s 反复重启** |
+| `standalone` | ✅（未启用集群或 Redis 降级） | 同 leader |
+| `error` | ❌ | `DOWN` 500（`require-redis: true` 且 Redis 不可用） |
+
+### 降级行为
+
+`require-redis: false`（默认）时 Redis 不可用会**降级为单机模式**（`standalone`），
+本副本自认 leader 继续服务——适合从单副本平滑迁移。
+
+但多副本下这会导致**每副本都写网关**，因此：
+
+> **生产多副本集群请务必设置 `require-redis: true`**，
+> 让 Redis 故障成为显式的启动失败，而不是静默脑裂。
+
+### 运维接口
+
+```bash
+GET /-/cluster      # 本副本角色、租约剩余、接管/失锁计数
+GET /-/subscriptions # _runtime.cluster 内也包含同样信息
+```
+
+`/-/cluster` 返回示例：
+
+```json
+{
+  "enabled": true, "role": "leader", "instance_id": "syncer-7d9f-1-a3b2c1",
+  "lock_key": "discovery-syncer:leader", "lock_ttl_sec": 30,
+  "renew_interval_sec": 10, "lease_age_sec": 4.2, "redis_ok": true,
+  "failovers": 1, "lost_leases": 0, "last_error": ""
+}
+```
+
+### 验证
+
+```bash
+# 真实 Redis 主备切换（抢锁/接管/优雅释放/降级）
+docker run -d --rm -p 16379:6379 redis:7-alpine
+bash tests/integration/cluster_verify.sh 16379
+
+# 双应用实例验证「只有 leader 装配订阅」与 SIGKILL 后接管
+python3 tests/integration/cluster_app_smoke.py 16379
+```
+
+实测：leader 被 SIGKILL 后，follower 在 **6.1 秒**（TTL=6s）内接管。
 
 ## 待优化点
 

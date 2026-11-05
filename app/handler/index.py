@@ -128,6 +128,23 @@ def health():
             result["status"] = "DOWN"
         elif result["running"] > 0 and result["lost"] > 0:
             result["status"] = "WARN"
+
+        # 集群模式：follower 本来就不跑同步作业，jobs 数为 0 或心跳缺失是正常的，
+        # 不能因为「没有作业在跑」就判 DOWN，否则 K8s 会把待命副本反复重启。
+        from app.runtime import get_elector
+
+        elector = get_elector()
+        if elector is not None:
+            cstate = elector.state.to_dict()
+            result["cluster"] = cstate
+            role = cstate["role"]
+            if role == "follower":
+                # 待命副本：只要 Redis 连通就算健康
+                result["status"] = "UP" if cstate["redis_ok"] else "WARN"
+                status_code = 200
+            elif role == "error":
+                result["status"] = "DOWN"
+                status_code = 500
     except Exception as e:
         result = {"status": "ERROR", "details": []}
         status_code = 500

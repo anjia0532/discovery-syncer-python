@@ -183,3 +183,26 @@ targets:
 #   fallback: true        # 推送不可用时自动叠加快照 diff 增量轮询
 #   notify-token: ""      # 入站回调额外令牌（仍受 SYNCER-API-KEY 保护）
 # ===========================================================================
+
+# ===========================================================================
+# 集群模式（多副本）—— 默认关闭，旧配置无需改动
+#
+# 单副本部署保持默认（enabled: false），完全不连接 Redis，行为与之前一致。
+# 多副本部署（K8s replicas > 1）时开启：各副本通过 Redis 租约选举 leader，
+# 只有 leader 装配订阅与定时作业并写网关，其余副本待命并自动接管，
+# 避免多副本重复写网关。leader 副本的 /health 保持 UP，follower 也会返回 UP
+# （只要 Redis 连通），因此 K8s 不会反复重启待命副本。
+#
+# cluster:
+#   enabled: true                    # 开启集群模式
+#   redis-url: "redis://:pwd@127.0.0.1:6379/0"
+#   key-prefix: discovery-syncer     # 多套环境共用 Redis 时用于隔离
+#   lock-ttl-sec: 30                 # leader 租约 TTL；副本崩溃后最多这么久被接管
+#   renew-interval-sec: 10           # 续约周期，建议 <= lock-ttl-sec / 3
+#   instance-id: ""                  # 留空自动生成 <hostname>-<pid>-<rand>
+#   redis-timeout-sec: 3
+#   require-redis: false             # true = Redis 不可用即启动失败（生产集群建议 true）
+#
+# 说明：require-redis=false 时 Redis 故障会降级为「每副本自认 leader」，
+# 适合从单副本平滑迁移；但多副本下会重复写网关，生产集群请置 true。
+# ===========================================================================

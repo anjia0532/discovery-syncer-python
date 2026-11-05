@@ -444,22 +444,93 @@ def _register_cron(target, func, expr: str, job_id: str, kwargs: dict) -> None:
 
 
 def reload() -> None:
-    """重新加载配置：构建客户端、探测版本、装配订阅、注册兜底对账与健康检查。"""
+    """重新加载配置：构建客户端、初始化集群选举、按角色装配订阅与调度。
+
+    集群模式下只有 leader 装配订阅/调度并写网关，follower 仅持有客户端待命；
+    角色切换由 :func:`_on_cluster_role_change` 回调驱动重新装配。
+    """
     logger.info("load config yaml")
     from app.model.config import discovery_clients, gateway_clients, settings
 
     clear_client()
+    _build_clients(settings, discovery_clients, gateway_clients)
 
-    if settings.config.discovery_servers:
-        for name, discovery in settings.config.discovery_servers.items():
+    # 集群选举：未启用时不触碰 Redis（单副本行为与 v3.0.0 完全一致）。
+    cluster_cfg = getattr(settings.config, "cluster", None)
+    from app.runtime import get_elector, init_cluster
+
+    enabled = bool(cluster_cfg and cluster_cfg.enabled)
+    if enabled:
+        elector = init_cluster(cluster_cfg, on_role_change=_on_cluster_role_change)
+        if elector is None:
+            logger.warning("集群模式已启用但选举器初始化失败，按单机模式运行")
+        else:
+            state = elector.state
+            logger.info("集群模式启动: role=%s instance=%s", state.role.value, state.instance_id)
+            if state.role.value == "error":
+                raise RuntimeError(f"集群选举失败: {state.last_error}")
+    else:
+        # 显式关闭：确保从集群模式切回单机时不残留旧选举器
+        init_cluster(None)
+
+    # 只有 leader（或未启用集群）才真正装配订阅与定时作业。
+    if _is_active():
+        _activate_workload()
+    else:
+        logger.info("当前副本为 follower，跳过订阅装配与定时作业（待命接管）")
+        get_manager().rebuild([])
+        get_scheduler().remove_all()
+
+
+def _build_clients(settings_obj, discovery_clients: dict, gateway_clients: dict) -> None:
+    """按配置构建注册中心/网关客户端（不做任何装配，角色无关）。"""
+    if settings_obj.config.discovery_servers:
+        for name, discovery in settings_obj.config.discovery_servers.items():
             cls = getattr(importlib.import_module(f"app.service.discovery.{discovery.type.value}"),
                           ''.join([k.title() for k in discovery.type.value.split('_')]))
             discovery_clients[name] = cls(discovery)
-    if settings.config.gateway_servers:
-        for name, gateway in settings.config.gateway_servers.items():
+    if settings_obj.config.gateway_servers:
+        for name, gateway in settings_obj.config.gateway_servers.items():
             cls = getattr(importlib.import_module(f"app.service.gateway.{gateway.type.value}"),
                           ''.join([k.title() for k in gateway.type.value.split('_')]))
             gateway_clients[name] = cls(gateway)
+
+
+def _is_active() -> bool:
+    """本副本是否应承担实际工作。
+
+    未启用集群 / 未初始化选举器 → True（单机行为）。
+    ``LeaderElector.is_leader`` 对 STANDALONE 也返回 True，
+    因此 Redis 降级时也不会误停业务。
+    """
+    from app.runtime import get_elector
+
+    elector = get_elector()
+    if elector is None:
+        return True
+    return elector.is_leader
+
+
+def _on_cluster_role_change(old, new) -> None:
+    """角色变化回调：成为 leader 时装配，失去 leader 时停止装配。
+
+    该回调在选举线程内被调用，装配涉及网络与线程创建，耗时可能到秒级；
+    因此这里直接执行（选举线程本就不做别的重活），
+    但**吞掉所有异常**，避免把选举线程搞死。
+    """
+    logger.warning("集群角色变化: %s -> %s，开始重新装配工作负载", old, new)
+    try:
+        if new.value in ("leader", "standalone"):
+            _activate_workload()
+        elif new.value in ("follower", "error"):
+            _deactivate_workload()
+    except Exception:  # noqa: BLE001 - 回调不能让选举线程崩溃
+        logger.exception("角色切换后重新装配失败")
+
+
+def _activate_workload() -> None:
+    """装配订阅 Provider、兜底对账与健康检查（仅 leader 调用）。"""
+    from app.model.config import settings
 
     sqla_helper = db.get_sqla_helper()[1]
     specs: List[TargetSpec] = []
@@ -478,8 +549,10 @@ def reload() -> None:
         mode = _mode_of(target)
 
         if mode != RuntimeSubscribeMode.OFF:
-            spec = _build_spec(target, discovery_clients.get(target.discovery),
-                               gateway_clients.get(target.gateway))
+            # 走 get_*_client()：内部带 _ensure_clients()，且能容忍
+            # reload 重建字典的窗口期（直接读字典会拿到 None）。
+            spec = _build_spec(target, get_discovery_client(target.discovery),
+                               get_gateway_client(target.gateway))
             if spec:
                 specs.append(spec)
             if sub.reconcile:
@@ -512,3 +585,19 @@ def reload() -> None:
         {k: {"version": v["version"], "push": v["push_transport"],
              "providers": [p["kind"] for p in v["providers"]]} for k, v in summary.items()},
         ensure_ascii=False))
+
+
+def _deactivate_workload() -> None:
+    """停止订阅 Provider 与全部定时作业（失去 leader 时调用）。
+
+    只停「干活」的部分：保留客户端与任务总线，便于重新接管时快速恢复。
+    """
+    logger.warning("停止本副本的工作负载（订阅 + 定时作业）")
+    try:
+        get_manager().rebuild([])
+    except Exception:  # noqa: BLE001
+        logger.exception("停止订阅失败")
+    try:
+        get_scheduler().remove_all()
+    except Exception:  # noqa: BLE001
+        logger.exception("清空定时作业失败")

@@ -41,10 +41,13 @@ async def startup_event():
 
 @APP.on_event('shutdown')
 async def shutdown_event():
-    """优雅停机：停止订阅线程、释放 UDP 端口与本地线程池/调度器。"""
+    """优雅停机：释放 leader 租约、停止订阅线程、释放 UDP 端口与本地线程池/调度器。"""
     from app.runtime import shutdown_runtime
     from app.tasks.task_syncer import get_manager
 
+    # 先停订阅（可能持有 UDP/gRPC 连接），再放租约并关运行时。
+    # shutdown_runtime 内部会 shutdown_cluster() 主动释放 leader 租约，
+    # 让其他副本尽快接管，而不是等 TTL 自然过期。
     get_manager().stop_all()
     shutdown_runtime()
     LOGGER.info('subscription manager and local runtime stopped')

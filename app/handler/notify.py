@@ -73,16 +73,35 @@ def subscriptions() -> Response:
     追加 ``_runtime`` 字段暴露本地任务总线统计与调度作业列表，
     替代原 funboost 死信/消费者心跳提供的可观测性。
     """
-    from app.runtime import get_scheduler, get_task_bus
+    from app.runtime import get_elector, get_scheduler, get_task_bus
     from app.tasks.task_syncer import get_manager
 
     status = get_manager().all_status()
+    elector = get_elector()
     status["_runtime"] = {
         "taskbus": get_task_bus().stats,
         "scheduler_jobs": get_scheduler().job_ids,
-        "deployment": "single-replica",
+        "deployment": "cluster" if elector is not None else "single-replica",
+        "cluster": elector.state.to_dict() if elector is not None else {"enabled": False},
     }
     return JSONResponse(status_code=200, content=status)
+
+
+@router.get("/-/cluster", summary="集群状态", description="查看本副本的角色、租约与主备切换计数")
+def cluster_status() -> Response:
+    """返回本副本的集群状态。
+
+    未启用集群时返回 ``{"enabled": false, "role": "standalone"}``。
+    """
+    from app.runtime import get_elector
+
+    elector = get_elector()
+    if elector is None:
+        return JSONResponse(status_code=200, content={
+            "enabled": False, "role": "standalone",
+            "note": "未启用集群模式（单副本），不依赖 Redis",
+        })
+    return JSONResponse(status_code=200, content=elector.state.to_dict())
 
 
 @router.get("/-/versions", summary="版本适配", description="查看各注册中心/网关的版本探测结果与能力")

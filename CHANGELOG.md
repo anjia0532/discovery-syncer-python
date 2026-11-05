@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-11-06
+
+新增**可选**的多副本集群模式。默认关闭，单副本部署行为与 3.0.0 完全一致，不依赖 Redis。
+
+### Features
+
+* **集群模式（多副本）**：配置 `cluster.enabled: true` + `redis-url` 后，
+  各副本通过 Redis 租约选举 leader，只有 leader 装配订阅与定时作业并写网关，
+  其余副本待命并自动接管，解决多副本重复写网关的问题。
+* 选举实现（`app/runtime/cluster.py`）：
+  `SET NX PX` 抢锁；Lua「校验持有者 + PEXPIRE」续约，不会续上别人的锁；
+  Lua「校验持有者 + DEL」释放，不会误删新任 leader 的锁。
+* leader 失联后由 TTL 自然过期触发接管（默认 30s，可配置）；
+  优雅停机主动释放租约，其他副本**立即**接管。
+* 新增运维接口 `GET /-/cluster`（角色、租约剩余、接管/失锁计数）；
+  `/-/subscriptions` 的 `_runtime.cluster` 同步暴露同样信息。
+* `/health` 感知集群角色：follower 只要 Redis 连通即返回 UP，
+  **避免 K8s 把待命副本反复重启**。
+
+### Configuration
+
+* `cluster` 配置块全部可选带默认值，旧 `config.yaml` 零改动即可升级：
+  `enabled`（默认 false）、`redis-url`、`key-prefix`、`lock-ttl-sec`（30）、
+  `renew-interval-sec`（10）、`instance-id`、`redis-timeout-sec`（3）、
+  `require-redis`（false）。
+* 校验：`enabled=true` 必须有 `redis-url`；`renew-interval-sec < lock-ttl-sec`；
+  建议 `lock-ttl-sec >= 3 × renew-interval-sec`。
+* `require-redis: false`（默认）时 Redis 故障降级为单机模式，适合平滑迁移；
+  **生产多副本请置 true**，让 Redis 故障显式失败而非静默脑裂。
+
+### Bug Fixes
+
+* 修复 `reload()` 拆分后 `_activate_workload()` 引用未定义局部变量
+  `discovery_clients` / `gateway_clients` 导致应用启动失败
+  （真实启动验证时发现），改用 `get_*_client()`。
+
+### Tests
+
+* 新增 10 项选举器单元测试（fake Redis）：抢锁、follower 待命、
+  TTL 到期接管、续约失败降级、Redis 不可用降级/报错、
+  停机释放租约、不误删他人锁、状态快照字段。
+* 新增 `tests/integration/cluster_verify.sh` + `cluster_scenario.py`：
+  真实 Redis 验证 6 组场景，全通过。
+* 新增 `tests/integration/cluster_app_smoke.py`：启动两个真实应用实例，验证
+  leader 有订阅/作业、follower 零订阅零作业、SIGKILL leader 后接管并重新装配。
+  实测接管耗时 6.1s（TTL=6s）。
+* 单机模式应用冒烟 9/9 通过，无回归（RSS +0.8%，线程 0 增长）。
+* 静态依赖检查白名单化：`redis` 仅允许在 `app/runtime/cluster.py` 延迟导入。
+
 ## [3.0.0] - 2026-11-05
 
 这是一次架构级重写：**同步机制从定时轮询改为订阅上游推送**，并**移除 funboost 与 Redis 依赖**，

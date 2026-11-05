@@ -28,3 +28,6 @@ PyMySQL==1.1.2
 APScheduler>=3.10,<4
 # 日志库：此前由 funboost 传递安装，现显式声明；不再使用 funboost 的 TaskIdLogger
 nb_log
+# 可选：多副本集群模式的 leader 选举（cluster.enabled=true 时才需要）。
+# 单副本部署不使用，但为避免运行时缺包，默认安装（体积很小）。
+redis>=5.0,<6

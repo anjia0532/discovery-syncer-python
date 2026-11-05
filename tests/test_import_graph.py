@@ -21,11 +21,17 @@ THIRD_PARTY = {
     # 可选/按需安装：gunicorn 是 main.py 里注释掉的备用部署方式；
     # git(GitPython) 只被 tools/backup.py 使用，README 说明单独安装。
     "gunicorn", "git",
+    # 集群模式依赖（cluster.enabled=true 才真正用到），已在 requirements 声明
+    "redis",
 }
 LOCAL_TOPS = {"app", "core", "cfg", "nb_log_config", "main", "misc", "tools"}
 
-# 明确禁止的依赖
-FORBIDDEN = {"funboost", "redis", "persist_queue"}
+# 明确禁止的依赖（funboost / persist_queue 已彻底移除）。
+# redis 是例外：v3.0.1 起作为**可选**集群模式依赖，只允许在
+# app/runtime/cluster.py 里延迟导入，其余位置一律禁止。
+FORBIDDEN = {"funboost", "persist_queue"}
+# 允许 import redis 的模块白名单（相对仓库根的 POSIX 路径）
+REDIS_ALLOWED = {"app/runtime/cluster.py"}
 
 
 def _production_files():
@@ -56,15 +62,19 @@ def _resolve(module: str) -> bool:
 
 
 def test_no_funboost_or_redis_imports():
-    """去掉 funboost / Redis 后，生产代码里不应再有它们的 import。"""
+    """funboost / persist_queue 彻底禁止；redis 仅允许集群模块延迟导入。"""
     violations = []
     for path in _production_files():
+        rel = str(path.relative_to(ROOT)).replace("\\", "/")
         tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
         for node in ast.walk(tree):
             for module in _modules(node):
-                if module.split(".")[0] in FORBIDDEN:
-                    violations.append((str(path.relative_to(ROOT)), node.lineno, module))
-    assert not violations, f"仍存在被移除的依赖 import: {violations}"
+                top = module.split(".")[0]
+                if top in FORBIDDEN:
+                    violations.append((rel, node.lineno, module))
+                elif top == "redis" and rel not in REDIS_ALLOWED:
+                    violations.append((rel, node.lineno, module))
+    assert not violations, f"存在被禁止的依赖 import: {violations}"
 
 
 def test_all_absolute_project_imports_resolve():

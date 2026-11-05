@@ -192,11 +192,62 @@ class Targets(BaseModel):
         return self
 
 
+class ClusterConfig(BaseModel):
+    """集群（多副本）配置。**默认关闭**，旧 config.yaml 无需改动。
+
+    单副本部署时保持 ``enabled: false``（默认），行为与 v3.0.0 完全一致、不依赖 Redis。
+    多副本部署时置 ``enabled: true`` 并配置 redis-url，各副本通过 Redis 抢租约选举
+    leader：**只有 leader 装配订阅与定时调度并写网关**，其余副本待命，
+    leader 失联后自动接管，避免多副本重复写网关。
+
+    Attributes:
+        enabled: 是否启用集群模式。False 时完全不触碰 Redis。
+        redis_url: Redis 连接串，如 ``redis://:pwd@127.0.0.1:6379/0``。
+        key_prefix: 键前缀，多套环境共用同一 Redis 时用于隔离。
+        lock_ttl_sec: leader 租约 TTL（秒）。副本崩溃后最多这么久才被接管。
+        renew_interval_sec: 租约续约周期（秒），应明显小于 lock_ttl_sec。
+        instance_id: 本副本标识；留空自动生成 ``<hostname>-<pid>-<rand>``。
+        redis_timeout_sec: Redis 连接/读写超时（秒）。
+        require_redis: True 时 Redis 不可用即启动失败；
+            False（默认）时降级为单机模式（各自为 leader），
+            适用于从单副本平滑迁移，但多副本下会重复写网关，需谨慎。
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = False
+    redis_url: str = Field("", alias="redis-url")
+    key_prefix: str = Field("discovery-syncer", alias="key-prefix")
+    lock_ttl_sec: int = Field(30, alias="lock-ttl-sec", ge=5)
+    renew_interval_sec: int = Field(10, alias="renew-interval-sec", ge=1)
+    instance_id: str = Field("", alias="instance-id")
+    redis_timeout_sec: float = Field(3.0, alias="redis-timeout-sec", gt=0)
+    require_redis: bool = Field(False, alias="require-redis")
+
+    @model_validator(mode='after')
+    def check_cluster(self) -> 'ClusterConfig':
+        if not self.enabled:
+            return self
+        assert self.redis_url, "cluster.enabled=true 时必须配置 cluster.redis-url"
+        assert self.renew_interval_sec < self.lock_ttl_sec, \
+            "cluster.renew-interval-sec 必须小于 lock-ttl-sec，否则租约会在续约前过期"
+        assert self.lock_ttl_sec >= 3 * self.renew_interval_sec, \
+            "建议 lock-ttl-sec >= 3 * renew-interval-sec，避免网络抖动导致误失锁"
+        return self
+
+    @property
+    def lock_key(self) -> str:
+        """leader 租约键。"""
+        return f"{self.key_prefix}:leader"
+
+
 class Config(BaseModel):
     common: Common = Field(..., alias="common")
     discovery_servers: Dict[str, Discovery] = Field(..., alias="discovery-servers")
     gateway_servers: Dict[str, Gateway] = Field(..., alias="gateway-servers")
     targets: List[Targets] = None
+    # 可选：集群（多副本）配置。默认关闭，旧配置零改动。
+    cluster: ClusterConfig = Field(default_factory=ClusterConfig, alias="cluster")
 
     @model_validator(mode='after')
     def check_config(self) -> 'Config':
