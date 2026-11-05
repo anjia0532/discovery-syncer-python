@@ -1,5 +1,6 @@
 ##########################
-# Build the release image.
+# Build the backup image.
+# 用于从 syncer 备份网关配置到 git，支持 kubectl port-forward 连接 K8s 内的 syncer。
 FROM python:3.11-slim-bullseye
 LABEL MAINTAINER="AnJia <anjia0532@gmail.com>"
 
@@ -13,10 +14,18 @@ RUN pip install -i https://mirrors.aliyun.com/pypi/simple --no-cache-dir --upgra
 
 RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list && \
   apt update && \
-  apt install -y git curl
+  apt install -y --no-install-recommends git curl ca-certificates && \
+  rm -rf /var/lib/apt/lists/*
+
+# 安装 kubectl（用于 port-forward 连接 K8s 内的 syncer）
+RUN KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)" && \
+  curl -fsSL -o /usr/local/bin/kubectl \
+    "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" && \
+  chmod +x /usr/local/bin/kubectl && \
+  kubectl version --client=true
 
 RUN git config --global http.sslVerify false
 
 ADD ./tools/backup.py /opt/discovery-syncer/backup.py
 
-ENTRYPOINT ["python3", "/opt/discovery-syncer/backup.py", ">/dev/stdout"]
+ENTRYPOINT ["python3", "/opt/discovery-syncer/backup.py"]

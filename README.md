@@ -190,11 +190,34 @@ plugins: [ ]
 | GIT_REPO           | git库地址，如果不需要push到库则不设置即可                        |
 | REMOTE             | remote名字，不传为origin                              |
 | BRANCH             | git分支名字，不传为main                                 |
-| DEFAULT_USER_EMAIL | git提交时用户名，不传为discovery-syncer-python@syncer.org |
-| DEFAULT_BASE_DIR   | git 库clone路径，默认为 syncer                         |
+| USER_EMAIL         | git提交时邮箱，不传为discovery-syncer-python@syncer.org |
+| BASE_DIR           | git 库clone路径，默认为 syncer                         |
 
-`job.json`
-格式类似 https://github.com/anjia0532/discovery-syncer-python/blob/216e36bb3260640e7ca0c6e823344861507fb1fd/tools/backup.py#L117-L124
+`job.json` 格式：
+
+```json
+{
+  "apisix1": {
+    "syncer": "http://127.0.0.1:19797",
+    "kubectl_forward": {
+      "context": "prod-cluster",
+      "namespace": "syncer",
+      "service": "syncer",
+      "remote_port": 9797,
+      "local_port": 19797
+    },
+    "gateways": ["apisix1", "apisix2"],
+    "base_name": "apisix.yaml",
+    "syncer_api_key": "xxx",
+    "timeout": 10,
+    "ssl_verify": false
+  }
+}
+```
+
+**kubectl port-forward 支持**：当 syncer 部署在 K8s 集群内时，配置 `kubectl_forward` 字段后，备份工具会自动执行 `kubectl --context <ctx> -n <ns> port-forward <svc> <local>:<remote>`，备份完成后自动关闭隧道。`local_port` 不填则自动分配空闲端口。
+
+> 注意：使用 kubectl port-forward 需要容器内已配置 kubeconfig（挂载 `~/.kube/config` 或设置 `KUBECONFIG` 环境变量）。
 
 如果用 docker 的话
 
@@ -204,9 +227,10 @@ docker run -e SYNC_JOB_JSON=job.json \
         -e BRANCH=main \
         -e REMOTE=origin \
         -e GIT_REPO='git@github.com:anjia0532/discovery-syncer-python-demo.git' \
-        -e DEFAULT_USER_EMAIL='discovery-syncer-python@syncer.org'  \
-        -e DEFAULT_BASE_DIR='syncer'  \
+        -e USER_EMAIL='discovery-syncer-python@syncer.org'  \
+        -e BASE_DIR='syncer'  \
         -v $(pwd)/job.json:/opt/discovery-syncer/job.json  \
+        -v $HOME/.kube:/root/.kube:ro \
         anjia0532/discovery-syncer-python-backup:v2.4.5
 ```
 
@@ -220,7 +244,12 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir --upgrade
 echo '{}' > ./job.json
 export SYNC_JOB_JSON=job.json
 python3 backup.py
+```
 
+也支持命令行参数直接指定配置：
+
+```bash
+python3 backup.py --config job.json --git-repo git@github.com:xxx/backup.git --branch main
 ```
 
 ### 还原
