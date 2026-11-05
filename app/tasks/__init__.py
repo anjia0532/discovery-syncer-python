@@ -1,13 +1,6 @@
-from pathlib import Path
+"""同步任务模块。
 
-from funboost import BoosterDiscovery
-
-# BoosterDiscovery(project_root_path=Path(__file__).parent, booster_dirs=[Path(__file__).parent]).auto_discovery()
-from app.tasks import task_syncer
-
-task_syncer.syncer.consume()
-task_syncer.reload.consume()
-task_syncer.health_check.consume()
-task_syncer.instance_health_check.consume()
-# 事件驱动的单服务同步消费者
-task_syncer.sync_service.consume()
+任务函数现在是普通函数，由 ``app.runtime.TaskBus`` 提交执行，
+不再需要 funboost 的 ``@boost`` 装饰器与 ``.consume()`` 消费者注册。
+保留本包是为了维持 ``app.tasks.task_syncer`` 的既有导入路径。
+"""

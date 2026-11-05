@@ -12,11 +12,11 @@ from queue import Queue
 from threading import Lock, Thread
 
 import requests
-from funboost.core.task_id_logger import TaskIdLogger
 from nb_log import LogManager
 # noinspection PyPackageRequirements
 from nb_log.monkey_print import nb_print
 
+from .task_context import TaskIdFilter
 from nb_log_config import IS_ADD_ELASTIC_HANDLER, \
     NB_LOG_FORMATER_INDEX_FOR_CONSUMER_AND_PUBLISHER, ELASTIC_HOST, computer_name, IS_ADD_DING_TALK_HANDLER, \
     DING_TALK_TOKEN, DING_TALK_SECRET, TIME_INTERVAL, DING_TALK_MSG_TEMPLATE
@@ -37,8 +37,13 @@ def get(name: str = '', tag: str = '') -> logging.Logger:
         logger_name = (tag + '_' + name)
     else:
         logger_name = name
-    logger = LogManager(logger_name, logger_cls=TaskIdLogger).get_logger_and_add_handlers(
+    # 原先靠 funboost 的 TaskIdLogger 注入 record.task_id；改用标准 logging.Logger
+    # + TaskIdFilter，DingTalkHandler 的 %(task_id)s 与 ElasticHandler 的
+    # record.task_id 才不会因缺字段抛异常。
+    logger = LogManager(logger_name, logger_cls=logging.Logger).get_logger_and_add_handlers(
         formatter_template=NB_LOG_FORMATER_INDEX_FOR_CONSUMER_AND_PUBLISHER)
+    if not any(isinstance(f, TaskIdFilter) for f in logger.filters):
+        logger.addFilter(TaskIdFilter())
 
     if IS_ADD_ELASTIC_HANDLER:
         handler = ElasticHandler([ELASTIC_HOST], "")

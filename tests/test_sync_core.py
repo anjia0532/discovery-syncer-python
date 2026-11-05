@@ -80,6 +80,29 @@ def test_sync_one_service_no_diff_still_heartbeats(sync_core):
     assert heartbeats == ["t1"]
 
 
+def test_sync_one_service_failure_does_not_refresh_heartbeat(sync_core):
+    """回归：失败时不能刷新心跳，否则 /health 感知不到同步故障（替代死信队列）。"""
+    heartbeats = []
+
+    class FakeDiscovery:
+        def get_service_all_instances(self, name, config):
+            raise RuntimeError("nacos down")
+
+    class FakeGateway:
+        def get_service_all_instances(self, target, name):
+            return []
+
+        def sync_instances(self, *args):
+            raise AssertionError("上游拉取失败时不应写网关")
+
+    result = sync_core.sync_one_service(
+        {"id": "t1", "config": {}, "exclude_service": []},
+        "svc-a", FakeDiscovery(), FakeGateway(), on_heartbeat=heartbeats.append,
+    )
+    assert result.error is not None
+    assert heartbeats == []
+
+
 def test_sync_one_service_excluded_is_skipped(sync_core):
     class NeverCalled:
         def get_service_all_instances(self, *args):

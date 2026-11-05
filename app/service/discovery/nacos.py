@@ -13,10 +13,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Tuple
+import time
+from typing import Any, List, Tuple
 
 import httpx
-from nb_time import NbTime
 
 from app.model.syncer_model import Instance, Registration, Service
 from app.service.discovery.discovery import Discovery
@@ -167,7 +167,7 @@ class Nacos(Discovery):
             hosts = raw if isinstance(raw, list) else []
             instances = [self._to_instance(h, h.get("clusterName", "DEFAULT"), {}, namespace)
                          for h in hosts if not enabled_only or h.get("enabled", True)]
-            return instances, int(NbTime().timestamp)
+            return instances, int(time.time())
 
         ext_data = ext | {"serviceName": service_name, "clusterName": "DEFAULT",
                           "groupName": group, "pageSize": 1000000, "pageNo": 1,
@@ -182,7 +182,7 @@ class Nacos(Discovery):
             if enabled_only and not instance.get("enabled", False):
                 continue
             instances.append(self._to_instance(instance, instance.get("clusterName"), resp, namespace))
-        return instances, int(NbTime().timestamp)
+        return instances, int(time.time())
 
     # -- 写 -----------------------------------------------------------------
     def modify_registration(self, registration: Registration, instances: List[Instance]):

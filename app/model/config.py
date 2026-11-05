@@ -217,8 +217,8 @@ class Settings(BaseModel):
             self._config = parse_yaml_raw_as(Config, httpx.get(self.config_path, timeout=10, verify=False).text)
         else:
             self._config = parse_yaml_file_as(Config, self.config_path)
-        from app.tasks.task_syncer import reload
-        reload.publish(msg={})
+        # reload 由调用方显式触发（startup 同步调用 / /-/reload 提交到本地任务总线）。
+        # 这里不再自动发布，避免 reload 内部访问 config 时形成重复触发。
 
     @property
     def config(self):

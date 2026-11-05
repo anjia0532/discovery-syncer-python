@@ -68,10 +68,21 @@ def notify(
 
 @router.get("/-/subscriptions", summary="订阅状态", description="查看各同步作业的订阅通道与健康状态")
 def subscriptions() -> Response:
-    """返回每个 target 的订阅策略、版本、Provider 健康与事件计数。"""
+    """返回每个 target 的订阅策略、版本、Provider 健康与事件计数。
+
+    追加 ``_runtime`` 字段暴露本地任务总线统计与调度作业列表，
+    替代原 funboost 死信/消费者心跳提供的可观测性。
+    """
+    from app.runtime import get_scheduler, get_task_bus
     from app.tasks.task_syncer import get_manager
 
-    return JSONResponse(status_code=200, content=get_manager().all_status())
+    status = get_manager().all_status()
+    status["_runtime"] = {
+        "taskbus": get_task_bus().stats,
+        "scheduler_jobs": get_scheduler().job_ids,
+        "deployment": "single-replica",
+    }
+    return JSONResponse(status_code=200, content=status)
 
 
 @router.get("/-/versions", summary="版本适配", description="查看各注册中心/网关的版本探测结果与能力")

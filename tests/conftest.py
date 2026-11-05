@@ -1,4 +1,4 @@
-"""测试夹具：在不安装 funboost / redis / nb_log 的环境里加载待测模块。
+"""测试夹具：在不安装 funboost / redis / nb_log / db_libs / APScheduler 的环境里加载待测模块。
 
 做法是把 `app` 构造成一个**轻量假包**（不执行 app/__init__.py，避免拉起 FastAPI），
 再用 importlib 按文件加载目标模块，并对少数项目内依赖注入 stub。
@@ -52,6 +52,7 @@ def stub_environment():
         ("app.service", ROOT / "app/service"),
         ("app.compat", ROOT / "app/compat"),
         ("app.subscription", ROOT / "app/subscription"),
+        ("app.runtime", ROOT / "app/runtime"),
         ("core", ROOT / "core"),
         ("core.lib", ROOT / "core/lib"),
     ):
@@ -133,3 +134,19 @@ def cron(stub_environment):
 @pytest.fixture(scope="session")
 def app_config(stub_environment):
     return load_module("app.model.config", "app/model/config.py", package="app.model")
+
+
+@pytest.fixture(scope="session")
+def task_context(stub_environment):
+    return load_module("core.lib.task_context", "core/lib/task_context.py", package="core.lib")
+
+
+@pytest.fixture(scope="session")
+def runtime_taskbus(stub_environment, task_context):
+    return load_module("app.runtime.taskbus", "app/runtime/taskbus.py", package="app.runtime")
+
+
+@pytest.fixture(scope="session")
+def runtime_scheduler(stub_environment):
+    # APScheduler 在 LocalScheduler.start() 内延迟导入，加载模块本身无需安装。
+    return load_module("app.runtime.scheduler", "app/runtime/scheduler.py", package="app.runtime")

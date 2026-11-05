@@ -39,7 +39,12 @@ def reload():
     """
     try:
         from app.model.config import settings
+        from app.runtime import get_task_bus
+        from app.tasks.task_syncer import reload
+
         settings.load_config()
+        # 配置加载与订阅重建解耦：提交到本地任务总线异步执行，保持接口快速返回。
+        get_task_bus().submit(reload)
     except Exception as e:
         logger.error(f"重新加载配置文件报错", exc_info=e)
     return Response(content=RESP_OK)

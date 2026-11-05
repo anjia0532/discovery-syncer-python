@@ -142,14 +142,15 @@ def sync_one_service(
                             target_id, service_name, diff)
             gateway_client.sync_instances(target, service_name, diff, discovery_instances)
             result.changed = True
-    except Exception as exc:  # noqa: BLE001 - 单服务失败不能拖垮其它服务
-        result.error = f"{type(exc).__name__}: {exc}"
-        active_log.warning("同步服务失败 作业=%s service=%s err=%s", target_id, service_name, exc)
-    finally:
-        # 关键：无论有无 diff 都刷新心跳，避免订阅模式下 /health 误判失联。
+        # 只有成功（含无变更）才刷新心跳。失败时故意不刷新，
+        # /health 才能通过 maximum-interval-sec 感知同步故障；
+        # 这也是去掉 funboost 死信队列后保留可观测性的关键。
         if on_heartbeat:
             try:
                 on_heartbeat(target_id)
             except Exception:  # noqa: BLE001
                 pass
+    except Exception as exc:  # noqa: BLE001 - 单服务失败不能拖垮其它服务
+        result.error = f"{type(exc).__name__}: {exc}"
+        active_log.warning("同步服务失败 作业=%s service=%s err=%s", target_id, service_name, exc)
     return result

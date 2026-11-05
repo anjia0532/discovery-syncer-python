@@ -104,7 +104,7 @@ class SubscriptionManager:
     """订阅生命周期编排。
 
     Args:
-        publisher: ``(target_id, service_name, event) -> None``，通常由 funboost 桥接。
+        publisher: ``(target_id, service_name, event) -> None``，由本地任务总线桥接。
         debounce_ms: 事件去抖窗口。
         supervise_interval: 降级巡检周期秒数。
         logger: 可选 logger。

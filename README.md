@@ -15,38 +15,26 @@ docker run anjia0532/discovery-syncer-python:v2.7.8
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
 `-c http://xxxxx/nacos/v1/cs/configs?tenant=public&group=DEFAULT_GROUP&dataId=discovery-syncer.yaml` ,便于管理
 
-**破坏性更新**
+**运行时依赖（已简化）**
 
-v2.7.0 版本增加了redis的依赖，原方案会导致内存缓慢增长，部分情况下甚至出现任务阻塞卡死的情况，如果不想引入redis,可以退回v2.6.13版本
+自 v3 起已移除 funboost 与 Redis：任务执行改为进程内 `ThreadPoolExecutor`
+（`app/runtime/taskbus.py`），定时调度改为本地 APScheduler + MemoryJobStore
+（`app/runtime/scheduler.py`）。**不再需要任何外部中间件**，一个容器即可运行。
 
-或者修改 `app.tasks.task_syncer.py`和 `app.scheduler.scheduler.py` 将 `funboost_background_scheduler_redis_store` 改为 `funboost_aps_scheduler`
-将 <https://github.com/anjia0532/discovery-syncer-python/blob/master/app/tasks/common.py> 改为
-```python
-class FunboostCommonConfig(BoosterParams):
-    # 中间件选型见3.1章节 https://funboost.readthedocs.io/zh/latest/articles/c3.html
-    broker_kind: BrokerEnum = BrokerEnum.SQLITE_QUEUE
-    # 是否使用分布式控频
-    is_using_distributed_frequency_control: bool = True
-    # 是否将发布者的心跳发送到redis，有些功能的实现需要统计活跃消费者。因为有的中间件不是真mq。这个功能,需要安装redis.
-    is_send_consumer_hearbeat_to_redis: bool = True
-```
+> **单副本约束**：服务持有内存客户端字典、内存订阅管理器、UDP socket 与 SQLite
+> 任务库，且去掉了 Redis 分布式锁，必须以单副本运行（K8s `replicas: 1`）。
+> 如需多副本 HA，需先外置状态并引入 leader 选举，属于另一量级的改造。
 
-参考 https://github.com/anjia0532/discovery-syncer-python/commit/eb4f0299ae330d259b2331ecef75f336a2c5c37a
+历史说明：v2.7.0 曾引入 Redis 解决内存增长与任务阻塞问题（v2.6.13 及以前无 Redis）。
+现在通过「订阅事件去抖 + 5 分钟全量对账兜底」从根本上降低了队列压力，
+消息队列与分布式锁都不再必要。
 
 ### 配置文件
 
 [点击查看 config.yaml](https://github.com/anjia0532/discovery-syncer-python/blob/master/config-example.yaml)
 
-运行的时候，需要配置环境变量
-```ini
-REDIS_HOST=127.0.0.1
-REDIS_USERNAME=
-REDIS_PASSWORD=
-REDIS_PORT=6379
-REDIS_DB=7
-REDIS_DB_FILTER_AND_RPC_RESULT=8
-REDIS_URL=f'redis://{REDIS_USERNAME}:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
-```
+运行的时候**不再需要配置 `REDIS_*` 环境变量**，也无需启动 Redis。
+安装依赖即可：`pip install -r requirements.txt`（显式依赖 `APScheduler`、`nb_log`）。
 
 ### Api接口
 
@@ -430,6 +418,27 @@ targets:
 需要完全灰度对比时可设置 `subscribe.enabled: false` 或 `subscribe.mode: off`，
 行为与旧版定时全量轮询一致。完整可选项见 `config-example.yaml` 末尾注释块。
 
+### 本地运行时（去 funboost / Redis）
+
+| 职责 | 旧实现 | 新实现 |
+|---|---|---|
+| 异步任务 | `@boost` × 5 + Redis Stream + 5 个 consumer | `app/runtime.TaskBus`（ThreadPoolExecutor + 重试 + 统计） |
+| 定时调度 | `funboost_background_scheduler_redis_store` + Redis JobStore/锁 | `app/runtime.LocalScheduler`（APScheduler + MemoryJobStore） |
+| 任务上下文 | `funboost_current_task` / `TaskIdLogger` | `core/lib/task_context.py`（ContextVar + `TaskIdFilter`） |
+| 队列增强 | 重试×4 / 死信 / 分布式 qps / 20s 过期 / 600s 超时 | 重试×2 + 5m 全量对账兜底 + httpx 10s 超时 |
+
+去掉的能力与补偿：
+
+* **任务持久化**（进程重启丢消息）：由默认 `@every 5m` 的全量对账兜底补齐。
+* **死信可观测性**：`GET /-/subscriptions` 的 `_runtime.taskbus` 暴露
+  `submitted/succeeded/failed/retries`；且同步失败时**不刷新心跳**，
+  `/health` 可通过 `maximum-interval-sec` 感知故障。
+* **`function_timeout` 强杀**：Python 线程不可中断，改由各 HTTP 客户端的 10s timeout 保障。
+* **分布式控频 / 多副本互斥**：单副本运行，无需该能力。
+
+`/-/reload` 现在显式向本地任务总线提交 `reload`；`Settings.load_config()` 只负责
+解析配置，不再隐式触发重载，消除了原先的重复触发与潜在重入。
+
 ### 新增运维接口
 
 | 路径 | 用途 |
@@ -480,7 +489,8 @@ python3 tests/integration/run_local_matrix.py     # 需 pip install httpx
 
 ## 鸣谢
 
-- [funboost -- python万能分布式函数调度框架](https://github.com/ydf0509/funboost)
+- [APScheduler -- 本地轻量定时调度框架](https://apscheduler.readthedocs.io/)（v3 起替代 funboost 定时任务）
+- [funboost -- python万能分布式函数调度框架](https://github.com/ydf0509/funboost)（历史版本使用，v3 起已移除）
 - [apisix -- 云原生Api网关](https://github.com/apache/apisix)
 - [kong -- 云原生Api网关](https://github.com/Kong/kong)
 - [nacos -- 一个更易于构建云原生应用的动态服务发现、配置管理和服务管理平台](https://github.com/alibaba/nacos)

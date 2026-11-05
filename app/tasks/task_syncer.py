@@ -1,20 +1,25 @@
-"""同步任务编排（订阅化重构版）。
+"""同步任务编排（订阅化 + 本地运行时版）。
 
-架构变化
+架构演进
 --------
-旧：``reload()`` 为每个 target 注册 CronTrigger -> 定时 ``syncer()``
-    全量拉注册中心 + 全量拉网关 -> 比对差异 -> 同步。
-
-新：``reload()`` 装配 :class:`SubscriptionManager` -> 上游变更事件
-    -> 去抖合并 -> ``sync_service()`` 只同步变更的**单个服务**；
-    ``syncer()`` 保留为低频全量对账兜底（以及 ``subscribe.mode: off`` 时的旧行为）。
+1. 旧版：``reload()`` 注册 CronTrigger -> 定时 ``syncer()`` 全量拉两边比对。
+2. 订阅化：``reload()`` 装配 SubscriptionManager -> 事件 -> ``sync_service()``
+   只同步变更的单个服务；``syncer()`` 保留为低频全量对账兜底。
+3. 本版：移除 funboost + Redis，任务执行与定时调度全部改为**进程内**：
+   ``app.runtime.TaskBus``（ThreadPoolExecutor）与 ``app.runtime.LocalScheduler``
+   （APScheduler + MemoryJobStore）。
 
 兼容性
 ------
 * 旧 ``config.yaml`` 不写任何订阅字段即可加载，默认 AUTO 订阅 + 兜底对账。
 * ``fetch-interval`` / ``maximum-interval-sec`` / ``healthcheck`` / ``config.template``
-  等字段语义保持不变（前者转为对账/健康检查周期）。
+  等字段语义保持不变。
 * ``time_parser`` 仍从本模块导出，外部 import 不破坏。
+
+单副本约束
+----------
+本服务持有内存客户端字典、内存订阅管理器、UDP socket 与 SQLite 任务库，
+且去掉了 Redis 分布式锁，必须以单副本运行（K8s ``replicas: 1``）。
 """
 
 from __future__ import annotations
@@ -23,23 +28,21 @@ import functools
 import importlib
 import json
 import re
-from typing import List, Optional
+import threading
+from typing import Any, List, Optional
 from urllib.parse import urlparse
 
-from apscheduler.triggers.cron import CronTrigger
-from funboost import boost, funboost_current_task
-from funboost.timing_job.apscheduler_use_redis_store import funboost_background_scheduler_redis_store
-
 from app.model.syncer_model import DiscoveryInstance, Jobs, Registration
+from app.runtime import get_scheduler, get_task_bus
 from app.service.discovery.discovery import Discovery
 from app.service.gateway.gateway import Gateway
 from app.service.sync_core import SyncResult, sync_one_service
 from app.subscription import SubscribeMode as RuntimeSubscribeMode
 from app.subscription import SubscriptionManager, TargetSpec
 from app.subscription.cron import time_parser
-from app.tasks.common import FunboostCommonConfig
 from core.database import db
 from core.lib.logger import for_task
+from core.lib.task_context import current_task
 
 logger = for_task(__name__)
 
@@ -48,10 +51,12 @@ logger = for_task(__name__)
 DEFAULT_RECONCILE_INTERVAL = "@every 5m"
 
 _manager: Optional[SubscriptionManager] = None
+_clients_lock = threading.Lock()
+_reloading = False
 
 
 # ---------------------------------------------------------------------------
-# 订阅管理器（延迟创建，避免 import 期连接 redis）
+# 订阅管理器
 # ---------------------------------------------------------------------------
 def _find_target(target_id: str) -> Optional[dict]:
     """按 id 找到 target 配置并转成可序列化 dict（供事件投递）。"""
@@ -64,7 +69,7 @@ def _find_target(target_id: str) -> Optional[dict]:
 
 
 def _publish_sync_service(target_id: str, service_name: str, event: Any) -> None:
-    """EventBus 的 publisher：把变更事件投进 funboost 队列。"""
+    """EventBus 的 publisher：把变更事件提交给本地任务总线。"""
     target = _find_target(target_id)
     if not target:
         logger.warning("事件找不到对应 target, id=%s service=%s", target_id, service_name)
@@ -81,7 +86,7 @@ def _publish_sync_service(target_id: str, service_name: str, event: Any) -> None
             "ts": event.ts,
         },
     }
-    sync_service.publish(payload)
+    get_task_bus().submit(sync_service, **payload)
 
 
 def get_manager(debounce_ms: Optional[int] = None) -> SubscriptionManager:
@@ -101,15 +106,38 @@ def get_manager(debounce_ms: Optional[int] = None) -> SubscriptionManager:
 
 
 # ---------------------------------------------------------------------------
-# 客户端缓存
+# 客户端缓存与初始化
 # ---------------------------------------------------------------------------
+def _ensure_clients() -> None:
+    """客户端字典为空时同步完成一次 reload。
+
+    原实现在这里 ``reload.publish(msg={})``，靠消息队列的**异步**特性规避
+    了「reload 内部又访问 config」的重入。改成本地同步调用后必须显式加
+    重入保护，否则会递归。``reload()`` 本身只直接读 ``discovery_clients``
+    字典，不走 ``get_*_client()``，因此正常路径不会触发二次进入。
+    """
+    global _reloading
+    from app.model.config import discovery_clients, gateway_clients
+
+    if discovery_clients and gateway_clients:
+        return
+    with _clients_lock:
+        if _reloading or (discovery_clients and gateway_clients):
+            return
+        _reloading = True
+        try:
+            logger.warning("客户端尚未初始化，触发一次同步 reload")
+            reload()
+        finally:
+            _reloading = False
+
+
 @functools.lru_cache()
 def get_discovery_client(name: str) -> Discovery:
     """按名称取注册中心客户端。"""
     from app.model.config import discovery_clients
 
-    if not discovery_clients:
-        reload.publish(msg={})
+    _ensure_clients()
     return discovery_clients.get(name)
 
 
@@ -118,14 +146,13 @@ def get_gateway_client(name: str) -> Gateway:
     """按名称取网关客户端。"""
     from app.model.config import gateway_clients
 
-    if not gateway_clients:
-        reload.publish(msg={})
+    _ensure_clients()
     return gateway_clients.get(name)
 
 
-def clear_client():
+def clear_client() -> None:
     """清空定时任务、客户端缓存与运行态，并停止所有订阅 Provider。"""
-    funboost_background_scheduler_redis_store.remove_all_jobs()
+    get_scheduler().remove_all()
     if _manager is not None:
         _manager.stop_all()
     from app.model.config import discovery_clients, gateway_clients
@@ -145,9 +172,6 @@ def clear_client():
 # ---------------------------------------------------------------------------
 def _apply_healthcheck(target: dict, service_name: str, instances: List[Any]) -> List[Any]:
     """结合主动健康检查状态过滤注册中心实例，并下线 unhealthy 节点。
-
-    这段逻辑与旧 ``syncer()`` 完全一致，只是从大循环里抽出来，
-    使得订阅事件触发的单服务同步也能复用。
 
     Args:
         target: target 配置字典。
@@ -187,10 +211,10 @@ def _apply_healthcheck(target: dict, service_name: str, instances: List[Any]) ->
 
 
 # ---------------------------------------------------------------------------
-# 任务：单服务事件同步 / 全量对账 / 健康检查 / reload
+# 任务函数（普通函数，由 TaskBus 提交；不再有 @boost 装饰器）
 # ---------------------------------------------------------------------------
-@boost(boost_params=FunboostCommonConfig(queue_name='queue_instance_health_check', qps=100))
-def instance_health_check(target: dict, instance: dict):
+def instance_health_check(target: dict, instance: dict) -> None:
+    """对单个实例执行一次主动健康检查。"""
     sqla_helper = db.get_sqla_helper()[1]
     healthcheck = target.get("healthcheck", None)
     discovery_instance = DiscoveryInstance(instance)
@@ -200,8 +224,8 @@ def instance_health_check(target: dict, instance: dict):
         logger.warning(f"健康检查报错 {e.args}")
 
 
-@boost(boost_params=FunboostCommonConfig(queue_name='queue_health_check_job', qps=50, ))
-def health_check(target: dict):
+def health_check(target: dict) -> None:
+    """把 target 下所有实例分发成单实例检查任务。"""
     healthcheck = target.get("healthcheck", None)
     target_id = target.get("id", None)
     if not target_id or not healthcheck:
@@ -210,14 +234,18 @@ def health_check(target: dict):
     instances = DiscoveryInstance({}).get_instances_by_target_id(target_id, sqla_helper)
     if not instances:
         return
-    fct = funboost_current_task()
+    context = current_task()
+    parent_task_id = context.task_id if context else None
     for instance in instances:
-        instance_health_check.publish({'target': target, 'instance': instance.to_dict_item()},
-                                      task_id=fct.function_result_status.task_id)
+        get_task_bus().submit(
+            instance_health_check,
+            task_id=parent_task_id,
+            target=target,
+            instance=instance.to_dict_item(),
+        )
 
 
-@boost(boost_params=FunboostCommonConfig(queue_name='queue_sync_service_job', qps=100, ))
-def sync_service(target: dict, service_name: str, event: dict = None):
+def sync_service(target: dict, service_name: str, event: dict = None) -> None:
     """事件驱动：只同步一个发生变更的服务。
 
     Args:
@@ -242,12 +270,11 @@ def sync_service(target: dict, service_name: str, event: dict = None):
         Jobs(**target).save_or_update(db.get_sqla_helper()[1])
 
 
-@boost(boost_params=FunboostCommonConfig(queue_name='queue_syncer_job', qps=50, ))
-def syncer(target: dict):
+def syncer(target: dict) -> None:
     """全量对账：遍历所有服务，仅对有差异的做同步。
 
     保留该任务以兼容旧调度与 ``subscribe.mode: off``；订阅模式下它由
-    ``reconcile-interval`` 低频触发，作为防丢事件的兜底，而不再是取差异的主路径。
+    ``reconcile-interval`` 低频触发，作为防丢事件的兜底。
     """
     discovery_client = get_discovery_client(target.get("discovery"))
     gateway_client = get_gateway_client(target.get("gateway"))
@@ -278,17 +305,7 @@ def syncer(target: dict):
 # 版本适配 + 订阅装配
 # ---------------------------------------------------------------------------
 def _interval_seconds(expr: str, default: float = 30.0) -> float:
-    """把定时表达式粗略换算成秒，用于订阅续约/轮询线程间隔。
-
-    支持 ``@every 10s|5m|1h`` 与 ``*/N * * * * *``；其它 cron 表达式返回默认值。
-
-    Args:
-        expr: 定时表达式。
-        default: 无法换算时的默认值。
-
-    Returns:
-        秒数。
-    """
+    """把定时表达式粗略换算成秒，用于订阅续约/轮询线程间隔。"""
     text = expr or ""
     match = re.search(r"@every\s+(\d+)\s*([smh])", text, re.I)
     if match:
@@ -322,8 +339,6 @@ def _build_spec(target, discovery_client, gateway_client) -> Optional[TargetSpec
     evidence = getattr(discovery_client, "version_evidence", "") if discovery_client else ""
 
     transport = cap.push.value if cap else "poll"
-    # Nacos 2.x 官方订阅是 gRPC，但服务端保留 UDP 兼容层；未注入 gRPC 流时
-    # 先走 UDP 兼容层，探测不通再由 Manager 自动降级为快照轮询。
     if cap and cap.major == 2:
         transport = PushTransport.UDP.value
     if discovery_client is not None and not discovery_client.supports_push:
@@ -379,22 +394,21 @@ def _build_spec(target, discovery_client, gateway_client) -> Optional[TargetSpec
 
 
 def _register_cron(target, func, expr: str, job_id: str, kwargs: dict) -> None:
-    """注册定时作业（兼容 @reboot 与 5/6 位 cron）。"""
+    """把定时作业登记到本地调度器（兼容 @reboot 与 5/6 位 cron）。"""
     second, minute, hour, day, month, day_of_week, next_run_time = time_parser(expr)
-    if next_run_time:
-        funboost_background_scheduler_redis_store.add_push_job(
-            func, id=job_id, name=job_id, next_run_time=next_run_time,
-            kwargs=kwargs, replace_existing=True)
-    else:
-        funboost_background_scheduler_redis_store.add_push_job(
-            func, id=job_id, name=job_id,
-            trigger=CronTrigger(second=second, minute=minute, hour=hour,
-                                day=day, month=month, day_of_week=day_of_week),
-            kwargs=kwargs, replace_existing=True)
+    get_scheduler().add_cron(
+        job_id=job_id,
+        func=func,
+        trigger_fields=None if next_run_time else {
+            "second": second, "minute": minute, "hour": hour,
+            "day": day, "month": month, "day_of_week": day_of_week,
+        },
+        next_run_time=next_run_time,
+        kwargs=kwargs,
+    )
 
 
-@boost(boost_params=FunboostCommonConfig(queue_name='queue_reload_job', qps=1, ))
-def reload():
+def reload() -> None:
     """重新加载配置：构建客户端、探测版本、装配订阅、注册兜底对账与健康检查。"""
     logger.info("load config yaml")
     from app.model.config import discovery_clients, gateway_clients, settings
@@ -433,24 +447,25 @@ def reload():
                                gateway_clients.get(target.gateway))
             if spec:
                 specs.append(spec)
-            # 订阅为主；全量对账降级为低频兜底（默认 5 分钟）。
             if sub.reconcile:
                 _register_cron(target, syncer,
                                sub.reconcile_interval or DEFAULT_RECONCILE_INTERVAL,
                                f"reconcile-{target.id}", payload)
         else:
-            # OFF：完全回退旧版定时全量轮询，便于灰度对比。
             _register_cron(target, syncer, target.fetch_interval, target.id, payload)
 
-        # 健康检查沿用原周期；id 加 target 后缀，修复原实现多 target 互相覆盖的 bug。
         if target.healthcheck:
             second, minute, hour, day, month, day_of_week, next_run_time = time_parser(target.fetch_interval)
             if not next_run_time:
-                funboost_background_scheduler_redis_store.add_push_job(
-                    health_check, id=f"health-check-{target.id}", name=f"health-check-{target.id}",
-                    trigger=CronTrigger(second=second, minute=minute, hour=hour,
-                                        day=day, month=month, day_of_week=day_of_week),
-                    kwargs=payload, replace_existing=True)
+                get_scheduler().add_cron(
+                    job_id=f"health-check-{target.id}",
+                    func=health_check,
+                    trigger_fields={
+                        "second": second, "minute": minute, "hour": hour,
+                        "day": day, "month": month, "day_of_week": day_of_week,
+                    },
+                    kwargs=payload,
+                )
 
     debounce = enabled_targets[0].subscribe.debounce_ms
     manager = get_manager(debounce)

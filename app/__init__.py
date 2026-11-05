@@ -7,7 +7,6 @@ from core import init_core_modules
 # from core.celery.celery import register_celery
 from core.lib import logger
 from core.settings import settings
-from .consume import register_task
 from .exception import register_exceptions
 from .handler import register_router
 from .middleware import register_middlewares
@@ -41,11 +40,13 @@ async def startup_event():
 
 @APP.on_event('shutdown')
 async def shutdown_event():
-    """优雅停机：停止订阅线程、释放 UDP 端口，避免热重载/容器退出时残留。"""
+    """优雅停机：停止订阅线程、释放 UDP 端口与本地线程池/调度器。"""
+    from app.runtime import shutdown_runtime
     from app.tasks.task_syncer import get_manager
 
     get_manager().stop_all()
-    LOGGER.info('subscription manager stopped')
+    shutdown_runtime()
+    LOGGER.info('subscription manager and local runtime stopped')
 
 # 加载核心模块
 init_core_modules(APP)
@@ -58,5 +59,3 @@ register_middlewares(APP)
 register_router(APP)
 # 注册定时任务
 register_scheduler(APP)
-# 注册消费者，指定任务函数所在模块，任务函数必须以task_开头
-# register_task(['app.tasks'])
