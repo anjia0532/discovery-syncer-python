@@ -1,0 +1,50 @@
+{
+  "clusters": {
+    "a": {
+      "kubeconfig": "/root/.kube/config-a",
+      "context": "ctx-a",
+      "namespace": "syncer",
+      "service": "syncer",
+      "remote_port": 9797
+    },
+    "b": {
+      "kubeconfig": "/root/.kube/config-b",
+      "context": "ctx-b",
+      "namespace": "syncer",
+      "service": "syncer",
+      "remote_port": 9797
+    },
+    "c": {
+      "kubeconfig": "/root/.kube/config-c",
+      "context": "ctx-c",
+      "namespace": "syncer",
+      "service": "syncer",
+      "remote_port": 9797
+    },
+    "d": {
+      "kubeconfig": "/root/.kube/config-d",
+      "context": "ctx-d",
+      "namespace": "syncer",
+      "service": "syncer",
+      "remote_port": 9797
+    },
+    "e": {
+      "kubeconfig": "/root/.kube/config-e",
+      "context": "ctx-e",
+      "namespace": "syncer",
+      "service": "syncer",
+      "remote_port": 9797
+    }
+  },
+  "jobs": [
+    {
+      "name": "gateway-backup",
+      "clusters": ["a", "b", "c", "d", "e"],
+      "gateways": ["apisix1", "apisix2"],
+      "base_name": "apisix.yaml",
+      "syncer_api_key": "NopU13xRheZng2hqHAwaI0TF5VHNN05G",
+      "timeout": 10,
+      "ssl_verify": false
+    }
+  ]
+}

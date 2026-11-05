@@ -1,40 +1,53 @@
 #!/usr/bin/env python3
 """从 syncer 下载网关配置并提交到 git 仓库。
 
-支持两种连接方式：
-1. 直连 syncer HTTP 地址（原有方式）
-2. kubectl port-forward 隧道（K8s 内部服务，自动管理进程生命周期）
-
-用法：
-    # 方式一：环境变量 + JSON 配置
-    export SYNC_JOB_JSON=/path/to/job.json
-    export GIT_REPO=git@github.com:xxx/backup.git
-    python3 backup.py
-
-    # 方式二：命令行参数
-    python3 backup.py --config job.json --git-repo git@github.com:xxx/backup.git
-
-    # 本地测试（不推 git）
-    python3 backup.py --config job.json --no-push
+支持多集群、多套 kubeconfig 的批量备份：
+- 顶层 clusters 定义每个集群的连接方式（kubeconfig / context / namespace / service）
+- jobs 引用集群名列表，一个 job 可备份多个集群
+- 备份路径：base_dir/<job>/<cluster>/<gateway>/<base_name>
 
 配置示例（job.json）：
     {
-      "apisix1": {
-        "syncer": "http://127.0.0.1:19797",
-        "kubectl_forward": {
-          "context": "prod-cluster",
+      "clusters": {
+        "a": {
+          "kubeconfig": "/root/.kube/config-a",
+          "context": "ctx-a",
           "namespace": "syncer",
           "service": "syncer",
-          "remote_port": 9797,
-          "local_port": 19797
+          "remote_port": 9797
         },
-        "gateways": ["apisix1", "apisix2"],
-        "base_name": "apisix.yaml",
-        "syncer_api_key": "xxx",
-        "timeout": 10,
-        "ssl_verify": false
+        "b": {
+          "kubeconfig": "/root/.kube/config-b",
+          "context": "ctx-b",
+          "namespace": "syncer",
+          "service": "syncer"
+        }
+      },
+      "jobs": [
+        {
+          "name": "gateway-backup",
+          "clusters": ["a", "b", "c", "d", "e"],
+          "gateways": ["apisix1"],
+          "syncer_api_key": "xxx",
+          "base_name": "apisix.yaml"
+        }
+      ]
+    }
+
+也兼容旧格式（单 job 直连）：
+    {
+      "apisix1": {
+        "syncer": "http://localhost:9797",
+        "gateways": ["apisix1"],
+        "syncer_api_key": "xxx"
       }
     }
+
+用法：
+    export SYNC_JOB_JSON=/path/to/job.json
+    python3 backup.py
+    python3 backup.py --config job.json --git-repo git@github.com:xxx/backup.git
+    python3 backup.py --config job.json --no-push
 """
 
 from __future__ import annotations
@@ -45,7 +58,6 @@ import json
 import logging
 import os
 import pathlib
-import signal
 import socket
 import subprocess
 import sys
@@ -64,33 +76,39 @@ logger = logging.getLogger("backup")
 
 
 @dataclass
-class KubectlForward:
-    """kubectl port-forward 配置。"""
+class ClusterSpec:
+    """单个集群的连接配置（一套 kubeconfig）。"""
 
-    context: str
+    kubeconfig: str | None = None
+    context: str | None = None
     namespace: str = "default"
     service: str = ""
     pod: str = ""
     remote_port: int = 9797
-    local_port: int = 0  # 0 表示自动分配
+    local_port: int = 0  # 0 = 自动分配
     extra_args: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.service and not self.pod:
-            raise ValueError("kubectl_forward 必须指定 service 或 pod")
+            raise ValueError("cluster 必须指定 service 或 pod")
+
+    @property
+    def target(self) -> str:
+        return self.service or self.pod
 
 
 @dataclass
-class SyncerJob:
-    """单个 syncer 的备份配置。"""
+class JobSpec:
+    """一个备份任务，可包含多个集群。"""
 
-    syncer: str
+    name: str
     gateways: list[str]
+    clusters: list[str] = field(default_factory=list)  # 引用 clusters 字典
     base_name: str = "apisix.yaml"
     syncer_api_key: str = ""
-    kubectl_forward: KubectlForward | None = None
     timeout: float = 10.0
     ssl_verify: bool = False
+    direct_url: str | None = None  # 直连模式（无 kubeconfig）
 
 
 # ---------------------------------------------------------------------------
@@ -120,27 +138,31 @@ def _wait_port(host: str, port: int, timeout: float = 15.0) -> bool:
 class PortForwardManager:
     """管理 kubectl port-forward 子进程的生命周期。
 
+    支持指定 kubeconfig 文件，用于多集群多套 kubeconfig 场景。
+
     用法::
 
-        with PortForwardManager(cfg) as url:
+        with PortForwardManager(cluster_spec) as url:
             httpx.get(f"{url}/health")
     """
 
-    def __init__(self, cfg: KubectlForward) -> None:
-        self._cfg = cfg
+    def __init__(self, spec: ClusterSpec) -> None:
+        self._spec = spec
         self._proc: subprocess.Popen | None = None
-        self._local_port = cfg.local_port or _find_free_port()
+        self._local_port = spec.local_port or _find_free_port()
 
     def __enter__(self) -> str:
-        target = self._cfg.service or self._cfg.pod
-        cmd = [
-            "kubectl",
-            "--context", self._cfg.context,
-            "--namespace", self._cfg.namespace,
+        cmd = ["kubectl"]
+        if self._spec.kubeconfig:
+            cmd += ["--kubeconfig", self._spec.kubeconfig]
+        if self._spec.context:
+            cmd += ["--context", self._spec.context]
+        cmd += [
+            "--namespace", self._spec.namespace,
             "port-forward",
-            target,
-            f"{self._local_port}:{self._cfg.remote_port}",
-            *self._cfg.extra_args,
+            self._spec.target,
+            f"{self._local_port}:{self._spec.remote_port}",
+            *self._spec.extra_args,
         ]
         logger.info("启动 port-forward: %s", " ".join(cmd))
         self._proc = subprocess.Popen(
@@ -152,7 +174,10 @@ class PortForwardManager:
             self._stop()
             raise RuntimeError(
                 f"port-forward 端口 {self._local_port} 在 15s 内未就绪，"
-                f"请检查 context={self._cfg.context} namespace={self._cfg.namespace} target={target}"
+                f"请检查 kubeconfig={self._spec.kubeconfig} "
+                f"context={self._spec.context} "
+                f"namespace={self._spec.namespace} "
+                f"target={self._spec.target}"
             )
         return f"http://127.0.0.1:{self._local_port}"
 
@@ -233,21 +258,15 @@ def ensure_git_repo(
 
 
 def _download_gateway_config(
-    job_name: str,
     gateway: str,
-    syncer: SyncerJob,
     syncer_url: str,
+    api_key: str,
     client: httpx.Client,
-    config_dir: pathlib.Path,
+    out_file: pathlib.Path,
 ) -> tuple[bool, str]:
-    """下载单个网关配置到本地文件。
-
-    Returns:
-        (是否成功, 状态信息)
-    """
-    config_dir.mkdir(parents=True, exist_ok=True)
-    out_file = config_dir / syncer.base_name
-    headers = {"SYNCER-API-KEY": syncer.syncer_api_key} if syncer.syncer_api_key else {}
+    """下载单个网关配置到本地文件。"""
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    headers = {"SYNCER-API-KEY": api_key} if api_key else {}
 
     try:
         resp = client.get(
@@ -272,58 +291,58 @@ def _download_gateway_config(
     return True, f"成功 ({len(resp.text)} bytes)"
 
 
-def backup_job(
+def backup_cluster(
     job_name: str,
-    syncer: SyncerJob,
+    cluster_name: str,
+    cluster_spec: ClusterSpec | None,
+    job: JobSpec,
     base_dir: str,
-    client: httpx.Client | None = None,
 ) -> list[dict[str, Any]]:
-    """备份单个 syncer 下的所有网关配置。
-
-    Returns:
-        每个网关的备份结果列表，用于生成 restore.py。
-    """
+    """备份单个集群下的所有网关配置。"""
     results = []
-    own_client = client is None
-    if own_client:
-        client = httpx.Client(
-            timeout=syncer.timeout,
-            verify=syncer.ssl_verify,
-        )
-
+    client = httpx.Client(timeout=job.timeout, verify=job.ssl_verify)
     pf_manager: PortForwardManager | None = None
-    try:
-        if syncer.kubectl_forward:
-            pf_manager = PortForwardManager(syncer.kubectl_forward)
-            syncer_url = pf_manager.__enter__()
-            logger.info("[%s] 通过 kubectl port-forward 连接: %s", job_name, syncer_url)
-        else:
-            syncer_url = syncer.syncer
 
-        for gateway in syncer.gateways:
-            config_dir = pathlib.Path(base_dir) / job_name / gateway
+    try:
+        if cluster_spec is not None:
+            pf_manager = PortForwardManager(cluster_spec)
+            syncer_url = pf_manager.__enter__()
+            logger.info("[%s/%s] kubectl port-forward: %s", job_name, cluster_name, syncer_url)
+        else:
+            syncer_url = job.direct_url or ""
+            logger.info("[%s/%s] 直连: %s", job_name, cluster_name, syncer_url)
+
+        for gateway in job.gateways:
+            # 多集群路径：base_dir/job/cluster/gateway/file
+            # 单集群直连：base_dir/job/gateway/file（兼容旧格式）
+            if cluster_spec is not None:
+                config_dir = pathlib.Path(base_dir) / job_name / cluster_name / gateway
+            else:
+                config_dir = pathlib.Path(base_dir) / job_name / gateway
+            out_file = config_dir / job.base_name
+
             ok, msg = _download_gateway_config(
-                job_name, gateway, syncer, syncer_url, client, config_dir
+                gateway, syncer_url, job.syncer_api_key, client, out_file,
             )
-            status = "OK" if ok else "FAIL"
             logger.info(
-                "[%s/%s] %s -> %s/%s/%s : %s",
-                job_name, gateway, status, base_dir, job_name, gateway, msg,
+                "[%s/%s/%s] %s : %s",
+                job_name, cluster_name, gateway,
+                "OK" if ok else "FAIL", msg,
             )
             results.append({
                 "job": job_name,
+                "cluster": cluster_name,
                 "gateway": gateway,
-                "base_name": syncer.base_name,
+                "base_name": job.base_name,
                 "ok": ok,
                 "msg": msg,
-                "syncer": syncer.syncer,
-                "syncer_api_key": syncer.syncer_api_key,
+                "syncer": syncer_url,
+                "syncer_api_key": job.syncer_api_key,
             })
     finally:
         if pf_manager is not None:
             pf_manager.__exit__()
-        if own_client:
-            client.close()
+        client.close()
 
     return results
 
@@ -358,8 +377,14 @@ def check_file(file_path: str) -> None:
         sys.exit(1)
 
 
-def restore(job: str, gateway: str, base_name: str, syncer: str, api_key: str) -> bool:
-    file_path = os.path.join(os.path.dirname(__file__), job, gateway, base_name)
+def restore(job: str, cluster: str, gateway: str, base_name: str,
+            syncer: str, api_key: str) -> bool:
+    # 多集群路径 base_dir/job/cluster/gateway/file，单集群路径 base_dir/job/gateway/file
+    candidates = [
+        os.path.join(os.path.dirname(__file__), job, cluster, gateway, base_name),
+        os.path.join(os.path.dirname(__file__), job, gateway, base_name),
+    ]
+    file_path = next((p for p in candidates if os.path.isfile(p)), candidates[0])
     check_file(file_path)
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -372,7 +397,7 @@ def restore(job: str, gateway: str, base_name: str, syncer: str, api_key: str) -
             **CLIENT_KW,
         )
         if resp.status_code == 200:
-            print(f"还原成功: {{job}}/{{gateway}}/{{base_name}} -> {{syncer}}/restore/{{gateway}}")
+            print(f"还原成功: {{job}}/{{cluster}}/{{gateway}}/{{base_name}} -> {{syncer}}/restore/{{gateway}}")
             return True
         print(f"还原失败: HTTP {{resp.status_code}} {{resp.text}}", file=sys.stderr)
         return False
@@ -385,7 +410,7 @@ def main() -> int:
     ok_count = 0
     fail_count = 0
     for item in JOBS:
-        if restore(item["job"], item["gateway"], item["base_name"],
+        if restore(item["job"], item["cluster"], item["gateway"], item["base_name"],
                    item["syncer"], item["syncer_api_key"]):
             ok_count += 1
         else:
@@ -416,8 +441,12 @@ def generate_restore_script(results: list[dict[str, Any]], base_dir: str) -> pat
 # ---------------------------------------------------------------------------
 
 
-def load_config(config_path: str | None) -> dict[str, SyncerJob]:
-    """从 JSON 文件或环境变量加载备份配置。"""
+def load_config(config_path: str | None) -> tuple[dict[str, ClusterSpec], list[JobSpec]]:
+    """从 JSON 文件或环境变量加载配置。
+
+    Returns:
+        (clusters_dict, jobs_list)
+    """
     if config_path:
         with open(config_path, encoding="utf-8") as f:
             raw = json.load(f)
@@ -426,29 +455,61 @@ def load_config(config_path: str | None) -> dict[str, SyncerJob]:
             raw = json.load(f)
     else:
         raw = {
-            "apisix1": {
-                "syncer": "http://localhost:9797",
-                "gateways": ["apisix1"],
-                "base_name": "apisix.yaml",
-                "syncer_api_key": "NopU13xRheZng2hqHAwaI0TF5VHNN05G",
-            }
+            "jobs": [
+                {
+                    "name": "apisix1",
+                    "direct_url": "http://localhost:9797",
+                    "gateways": ["apisix1"],
+                    "syncer_api_key": "NopU13xRheZng2hqHAwaI0TF5VHNN05G",
+                }
+            ]
         }
 
-    jobs: dict[str, SyncerJob] = {}
-    for name, cfg in raw.items():
-        kf_cfg = None
-        if cfg.get("kubectl_forward"):
-            kf_cfg = KubectlForward(**cfg["kubectl_forward"])
-        jobs[name] = SyncerJob(
-            syncer=cfg["syncer"],
-            gateways=cfg.get("gateways", []),
-            base_name=cfg.get("base_name", "apisix.yaml"),
-            syncer_api_key=cfg.get("syncer_api_key", ""),
-            kubectl_forward=kf_cfg,
-            timeout=cfg.get("timeout", 10.0),
-            ssl_verify=cfg.get("ssl_verify", False),
+    # --- 解析 clusters ---
+    clusters: dict[str, ClusterSpec] = {}
+    for name, cfg in (raw.get("clusters") or {}).items():
+        clusters[name] = ClusterSpec(
+            kubeconfig=cfg.get("kubeconfig"),
+            context=cfg.get("context"),
+            namespace=cfg.get("namespace", "default"),
+            service=cfg.get("service", ""),
+            pod=cfg.get("pod", ""),
+            remote_port=cfg.get("remote_port", 9797),
+            local_port=cfg.get("local_port", 0),
+            extra_args=cfg.get("extra_args", []),
         )
-    return jobs
+
+    # --- 解析 jobs ---
+    jobs: list[JobSpec] = []
+    raw_jobs = raw.get("jobs")
+
+    if raw_jobs is not None:
+        # 新格式：{"clusters": {...}, "jobs": [...]}
+        for j in raw_jobs:
+            jobs.append(JobSpec(
+                name=j["name"],
+                gateways=j.get("gateways", []),
+                clusters=j.get("clusters", []),
+                base_name=j.get("base_name", "apisix.yaml"),
+                syncer_api_key=j.get("syncer_api_key", ""),
+                timeout=j.get("timeout", 10.0),
+                ssl_verify=j.get("ssl_verify", False),
+                direct_url=j.get("direct_url"),
+            ))
+    else:
+        # 旧格式：{"job_name": {...}}，兼容直连
+        for name, cfg in raw.items():
+            jobs.append(JobSpec(
+                name=name,
+                gateways=cfg.get("gateways", []),
+                base_name=cfg.get("base_name", "apisix.yaml"),
+                syncer_api_key=cfg.get("syncer_api_key", ""),
+                timeout=cfg.get("timeout", 10.0),
+                ssl_verify=cfg.get("ssl_verify", False),
+                direct_url=cfg.get("syncer"),
+            ))
+
+    return clusters, jobs
 
 
 # ---------------------------------------------------------------------------
@@ -464,10 +525,12 @@ def run_backup(args: argparse.Namespace) -> int:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    jobs = load_config(args.config)
+    clusters, jobs = load_config(args.config)
     if not jobs:
         logger.error("没有配置任何备份任务")
         return 1
+
+    logger.info("已加载 %d 个集群配置, %d 个备份任务", len(clusters), len(jobs))
 
     base_dir = args.base_dir or os.getenv("BASE_DIR", "syncer")
     git_repo = args.git_repo or os.getenv("GIT_REPO")
@@ -482,12 +545,28 @@ def run_backup(args: argparse.Namespace) -> int:
     if git_repo or not args.no_push:
         repo = ensure_git_repo(base_dir, git_repo, remote, branch)
 
-    # 2. 逐个备份
+    # 2. 逐个 job -> 逐个集群备份
     all_results: list[dict[str, Any]] = []
-    for name, syncer in jobs.items():
-        logger.info("开始备份: %s (gateways=%s)", name, syncer.gateways)
-        results = backup_job(name, syncer, base_dir)
-        all_results.extend(results)
+    for job in jobs:
+        logger.info("开始备份任务: %s (gateways=%s, clusters=%s)",
+                    job.name, job.gateways, job.clusters or ["direct"])
+
+        if job.clusters:
+            # 多集群模式
+            for cluster_name in job.clusters:
+                if cluster_name not in clusters:
+                    logger.error("集群 '%s' 未在 clusters 中定义，跳过", cluster_name)
+                    continue
+                results = backup_cluster(
+                    job.name, cluster_name, clusters[cluster_name], job, base_dir,
+                )
+                all_results.extend(results)
+        else:
+            # 直连模式（兼容旧格式）
+            results = backup_cluster(
+                job.name, "-", None, job, base_dir,
+            )
+            all_results.extend(results)
 
     # 3. 生成 restore.py
     generate_restore_script(all_results, base_dir)
@@ -520,7 +599,7 @@ def run_backup(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="从 syncer 备份网关配置到 git")
+    parser = argparse.ArgumentParser(description="从 syncer 备份网关配置到 git（支持多集群多 kubeconfig）")
     parser.add_argument("--config", "-c", default=None, help="备份配置 JSON 文件路径")
     parser.add_argument("--git-repo", default=None, help="Git 仓库地址")
     parser.add_argument("--remote", default=None, help="Git remote 名称 (默认 origin)")

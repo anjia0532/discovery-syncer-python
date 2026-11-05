@@ -193,31 +193,65 @@ plugins: [ ]
 | USER_EMAIL         | git提交时邮箱，不传为discovery-syncer-python@syncer.org |
 | BASE_DIR           | git 库clone路径，默认为 syncer                         |
 
-`job.json` 格式：
+`job.json` 格式（多集群多 kubeconfig）：
+
+```json
+{
+  "clusters": {
+    "a": {
+      "kubeconfig": "/root/.kube/config-a",
+      "context": "ctx-a",
+      "namespace": "syncer",
+      "service": "syncer",
+      "remote_port": 9797
+    },
+    "b": {
+      "kubeconfig": "/root/.kube/config-b",
+      "context": "ctx-b",
+      "namespace": "syncer",
+      "service": "syncer"
+    }
+  },
+  "jobs": [
+    {
+      "name": "gateway-backup",
+      "clusters": ["a", "b", "c", "d", "e"],
+      "gateways": ["apisix1", "apisix2"],
+      "base_name": "apisix.yaml",
+      "syncer_api_key": "xxx",
+      "timeout": 10,
+      "ssl_verify": false
+    }
+  ]
+}
+```
+
+**多集群备份**：顶层 `clusters` 定义每个集群的 kubeconfig / context / namespace / service，
+`jobs` 通过 `clusters` 列表引用集群名，一个 job 即可批量备份多个集群。
+备份路径为 `base_dir/<job>/<cluster>/<gateway>/<base_name>`，例如：
+
+```
+syncer/gateway-backup/a/apisix1/apisix.yaml
+syncer/gateway-backup/b/apisix1/apisix.yaml
+...
+```
+
+**单集群直连**（兼容旧格式，无需 kubeconfig）：
 
 ```json
 {
   "apisix1": {
-    "syncer": "http://127.0.0.1:19797",
-    "kubectl_forward": {
-      "context": "prod-cluster",
-      "namespace": "syncer",
-      "service": "syncer",
-      "remote_port": 9797,
-      "local_port": 19797
-    },
-    "gateways": ["apisix1", "apisix2"],
-    "base_name": "apisix.yaml",
-    "syncer_api_key": "xxx",
-    "timeout": 10,
-    "ssl_verify": false
+    "syncer": "http://localhost:9797",
+    "gateways": ["apisix1"],
+    "syncer_api_key": "xxx"
   }
 }
 ```
 
-**kubectl port-forward 支持**：当 syncer 部署在 K8s 集群内时，配置 `kubectl_forward` 字段后，备份工具会自动执行 `kubectl --context <ctx> -n <ns> port-forward <svc> <local>:<remote>`，备份完成后自动关闭隧道。`local_port` 不填则自动分配空闲端口。
+完整多集群示例见 `tools/backup-multi-cluster.json.example`。
 
-> 注意：使用 kubectl port-forward 需要容器内已配置 kubeconfig（挂载 `~/.kube/config` 或设置 `KUBECONFIG` 环境变量）。
+> 注意：容器内使用 kubectl port-forward 需要挂载 kubeconfig（`-v $HOME/.kube:/root/.kube:ro`）
+> 或通过 `KUBECONFIG` 环境变量指定路径。
 
 如果用 docker 的话
 
