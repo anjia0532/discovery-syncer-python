@@ -43,8 +43,13 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "版本号格式错误: $VERSION (需要 x.y.z)" >&2
+# 支持 3.0.0 与 v3.0.0 两种写法：统一去掉 v/V 前缀再校验。
+# 镜像 tag 不带 v（Docker 惯例），git tag 才带 v。
+VERSION="${VERSION#v}"
+VERSION="${VERSION#V}"
+
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+  echo "版本号格式错误: $VERSION (需要 3.0.0 或 v3.0.0，可带 -pre 等后缀)" >&2
   exit 1
 fi
 

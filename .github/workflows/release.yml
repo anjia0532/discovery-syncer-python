@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (semver, e.g. 3.0.0)'
+        description: 'Release version — 支持 3.0.0 或 v3.0.0（v 前缀可选，会自动归一化）'
         required: true
         type: string
       skip_matrix:
@@ -80,13 +80,23 @@ jobs:
 
       - name: Validate version
         run: |
-          VERSION="${{ github.event.inputs.version }}"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::版本号格式错误: $VERSION (需要 x.y.z，如 3.0.0)"
+          # 支持两种输入：3.0.0 与 v3.0.0（v 前缀可选）。
+          # 归一化后：VERSION=3.0.0（不带 v，用于镜像 tag 与 CHANGELOG），
+          #           TAG=v3.0.0（带 v，用于 git tag）。
+          RAW="${{ github.event.inputs.version }}"
+          RAW="$(echo "$RAW" | tr -d '[:space:]')"
+
+          VERSION="${RAW#v}"      # 去掉可能的前缀 v
+          VERSION="${VERSION#V}"  # 兼容大写 V
+
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::版本号格式错误: ${RAW}（需要 3.0.0 或 v3.0.0，可带 -pre 等后缀）"
             exit 1
           fi
+
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+          echo "输入 ${RAW} -> 归一化 VERSION=${VERSION}, TAG=v${VERSION}"
 
       - name: Detect existing tag (idempotent)
         run: |
@@ -129,7 +139,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          name: v${{ github.event.inputs.version }}
+          # 用归一化后的 TAG，避免用户输入 v3.0.0 时标题变成 "vv3.0.0"
+          name: ${{ env.TAG }}
           body_path: CHANGELOG.md
           generate_release_notes: false
           # Release 已存在时允许更新（配合 tag 的幂等逻辑，使发版可重跑）
@@ -166,14 +177,14 @@ jobs:
           file: misc/docker/Dockerfile
           push: true
           tags: |
-            gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}
+            gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
             gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:latest
             gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           labels: |
             maintainer=AnJia <anjia0532@gmail.com>
             org.opencontainers.image.description=从注册中心(如Nacos,Eureka)同步实例信息到网关服务(如Apisix,Kong)
             org.opencontainers.image.title=discovery-syncer-python
-            org.opencontainers.image.version=${{ github.event.inputs.version }}
+            org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -185,14 +196,14 @@ jobs:
           file: misc/docker/Dockerfile
           push: true
           tags: |
-            ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}
+            ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
             ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           labels: |
             maintainer=AnJia <anjia0532@gmail.com>
             org.opencontainers.image.description=从注册中心(如Nacos,Eureka)同步实例信息到网关服务(如Apisix,Kong)
             org.opencontainers.image.title=discovery-syncer-python
-            org.opencontainers.image.version=${{ github.event.inputs.version }}
+            org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
