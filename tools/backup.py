@@ -109,6 +109,7 @@ class JobSpec:
     timeout: float = 10.0
     ssl_verify: bool = False
     direct_url: str | None = None  # 直连模式（无 kubeconfig）
+    layout: str = "cluster"  # "cluster"（含集群层）| "flat"（旧格式，不含集群层）
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +315,8 @@ def backup_cluster(
 
         for gateway in job.gateways:
             # 多集群路径：base_dir/job/cluster/gateway/file
-            # 单集群直连：base_dir/job/gateway/file（兼容旧格式）
-            if cluster_spec is not None:
+            # 旧格式 flat 路径：base_dir/job/gateway/file
+            if cluster_spec is not None and job.layout == "cluster":
                 config_dir = pathlib.Path(base_dir) / job_name / cluster_name / gateway
             else:
                 config_dir = pathlib.Path(base_dir) / job_name / gateway
@@ -497,16 +498,39 @@ def load_config(config_path: str | None) -> tuple[dict[str, ClusterSpec], list[J
                 direct_url=j.get("direct_url"),
             ))
     else:
-        # 旧格式：{"job_name": {...}}，兼容直连
+        # 旧格式：{"job_name": {...}}
+        # 兼容两种子格式：
+        #   a) 直连：{"syncer": "http://...", ...}
+        #   b) 单集群 port-forward：{"kubectl_forward": {...}, ...}（v3.0.0 早期格式）
         for name, cfg in raw.items():
+            kf = cfg.get("kubectl_forward")
+            cluster_refs: list[str] = []
+            if kf:
+                # 把 kubectl_forward 转成隐式 cluster，保持向后兼容
+                implicit_key = f"__implicit_{name}"
+                clusters[implicit_key] = ClusterSpec(
+                    kubeconfig=kf.get("kubeconfig"),
+                    context=kf.get("context"),
+                    namespace=kf.get("namespace", "default"),
+                    service=kf.get("service", ""),
+                    pod=kf.get("pod", ""),
+                    remote_port=kf.get("remote_port", 9797),
+                    local_port=kf.get("local_port", 0),
+                    extra_args=kf.get("extra_args", []),
+                )
+                cluster_refs.append(implicit_key)
+                logger.debug("旧格式 kubectl_forward 转换为隐式集群: %s", implicit_key)
+
             jobs.append(JobSpec(
                 name=name,
                 gateways=cfg.get("gateways", []),
+                clusters=cluster_refs,
                 base_name=cfg.get("base_name", "apisix.yaml"),
                 syncer_api_key=cfg.get("syncer_api_key", ""),
                 timeout=cfg.get("timeout", 10.0),
                 ssl_verify=cfg.get("ssl_verify", False),
                 direct_url=cfg.get("syncer"),
+                layout="flat",  # 旧格式保持原路径 base_dir/job/gateway/file
             ))
 
     return clusters, jobs
