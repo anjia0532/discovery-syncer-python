@@ -68,6 +68,15 @@ else
   docker buildx use "$BUILDER"
 fi
 
+# 可选构建参数（国内网络构建时使用）：
+#   APT_MIRROR=mirrors.ustc.edu.cn      替换 Debian apt 源
+#   KUBECTL_VERSION=v1.31.4             指定 kubectl 版本；置空则跳过安装
+#   KUBECTL_BASE=...                    kubectl 下载源
+EXTRA_BUILD_ARGS=()
+[[ -n "${APT_MIRROR:-}" ]] && EXTRA_BUILD_ARGS+=(--build-arg "APT_MIRROR=${APT_MIRROR}")
+[[ -n "${KUBECTL_VERSION:-}" ]] && EXTRA_BUILD_ARGS+=(--build-arg "KUBECTL_VERSION=${KUBECTL_VERSION}")
+[[ -n "${KUBECTL_BASE:-}" ]] && EXTRA_BUILD_ARGS+=(--build-arg "KUBECTL_BASE=${KUBECTL_BASE}")
+
 # ---------------------------------------------------------------------------
 # 标签生成
 # ---------------------------------------------------------------------------
@@ -87,7 +96,7 @@ build_tags() {
 # ---------------------------------------------------------------------------
 if [[ "$BUILD_MAIN" == true ]]; then
   echo "==> 构建主镜像 ${IMAGE_NAME}:${VERSION}"
-  BUILD_ARGS=(--file "$SCRIPT_DIR/Dockerfile" --platform "$PLATFORM")
+  BUILD_ARGS=(--file "$SCRIPT_DIR/Dockerfile" --platform "$PLATFORM" "${EXTRA_BUILD_ARGS[@]}")
   PUSH_ARG="--push"
   [[ "$PUSH" == false ]] && PUSH_ARG="--load"
 
@@ -122,7 +131,7 @@ fi
 # ---------------------------------------------------------------------------
 if [[ "$BUILD_BACKUP" == true ]]; then
   echo "==> 构建备份镜像 ${IMAGE_NAME}-backup:${VERSION}"
-  BUILD_ARGS=(--file "$SCRIPT_DIR/BackupDockerfile" --platform "$PLATFORM")
+  BUILD_ARGS=(--file "$SCRIPT_DIR/BackupDockerfile" --platform "$PLATFORM" "${EXTRA_BUILD_ARGS[@]}")
   PUSH_ARG="--push"
   [[ "$PUSH" == false ]] && PUSH_ARG="--load"
 

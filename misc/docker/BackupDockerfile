@@ -19,14 +19,20 @@ WORKDIR /opt/discovery-syncer/
 
 RUN pip install -i https://mirrors.aliyun.com/pypi/simple --no-cache-dir --upgrade GitPython httpx
 
-# 换 apt 源。注意 Debian bookworm 起改用 /etc/apt/sources.list.d/debian.sources，
-# 老路径 /etc/apt/sources.list 可能不存在，`sed -i` 会因读不到文件返回 2 而中断构建。
-# 这里对两种路径都做兼容处理（存在才改），保证 bullseye/bookworm/trixie 都能构建。
-RUN if [ -f /etc/apt/sources.list ]; then \
-      sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list; \
-    fi; \
-    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-      sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources; \
+# 安装 git / curl / ca-certificates。
+# 刻意**不替换 apt 源**：原实现把 deb.debian.org 换成 mirrors.ustc.edu.cn，
+# 该镜像站在 GitHub Actions runner（境外 IP）上会让 apt-get update 失败
+# （exit 100），从而拖垮整个备份镜像构建。Debian 官方源在 runner 上速度足够。
+# 若在国内网络构建，可通过构建参数换源：
+#   --build-arg APT_MIRROR=mirrors.ustc.edu.cn
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+      if [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+      fi; \
+      if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+      fi; \
     fi; \
     apt-get update && \
     apt-get install -y --no-install-recommends git curl ca-certificates && \

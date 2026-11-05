@@ -11,13 +11,17 @@ ENV PROJECT_ENV=prod
 WORKDIR /opt/discovery-syncer/
 COPY requirements.txt /opt/discovery-syncer/
 
-# 换 apt 源。Debian bookworm 起改用 /etc/apt/sources.list.d/debian.sources，
-# 老路径不存在时 `sed -i` 会返回 2 并中断构建，因此对两种路径都做兼容。
-RUN if [ -f /etc/apt/sources.list ]; then \
-        sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list; \
-    fi; \
-    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-        sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources; \
+# 刻意不替换 apt 源：换成国内镜像站在 GitHub Actions runner（境外 IP）上
+# 会导致 apt-get update 失败（exit 100）。如需国内构建可用构建参数换源：
+#   --build-arg APT_MIRROR=mirrors.ustc.edu.cn
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+        if [ -f /etc/apt/sources.list ]; then \
+            sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+        fi; \
+        if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+            sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+        fi; \
     fi; \
     pip install -i https://mirrors.aliyun.com/pypi/simple --no-cache-dir --upgrade -r /opt/discovery-syncer/requirements.txt
 
