@@ -1,12 +1,11 @@
 name: Docker Image CI
 
+# 仅 master 分支 dev 构建推送。发版（tag + changelog + 双镜像）统一走 release.yml，
+# 避免同一次发版在 Docker Hub 上重复推送。
+
 on:
   push:
     branches: [ "master"]
-    tags:
-      - '*'
-  release:
-    types: [published]
 
 jobs:
   build:

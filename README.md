@@ -479,6 +479,56 @@ python3 tests/integration/run_local_matrix.py     # 需 pip install httpx
 > 也可直接在自己的 WSL 终端里执行上述脚本，结果等价。
 > 本机若未安装 Docker Desktop，同样只能用 `run_local_matrix.py` 做协议级验证。
 
+## 发版流程
+
+### 工作流总览
+
+| 工作流 | 触发方式 | 作用 |
+|---|---|---|
+| `.github/workflows/ci.yml` | PR / push master | 单测 + 冒烟（快速反馈） |
+| `.github/workflows/docker-image.yml` | push master | Docker Hub dev 镜像（`latest`） |
+| `.github/workflows/release.yml` | **手动** `workflow_dispatch` | 全量测试 → 打 tag → 写 CHANGELOG → 推 gcr.io + Docker Hub |
+
+### 发版步骤
+
+1. 确保工作区在 `master` 分支且已合并所有待发布改动。
+2. 在 GitHub Actions 页面选择 **Release** → **Run workflow**，输入版本号（如 `3.0.0`）。
+3. 工作流自动执行：
+   - **test 作业**：单测（48 项）+ 应用冒烟（含内存压力）+ Docker 多版本矩阵契约验证。
+   - 测试通过后进入 **release 作业**：生成 CHANGELOG → 打 tag `v{version}` → 创建 GitHub Release → 推送镜像到 `gcr.io` 与 Docker Hub。
+4. 镜像标签：`{version}`、`latest`、`{sha}` 三个。
+
+> 可选：`skip_matrix` 勾选可跳过 Docker 矩阵（仅单测 + 冒烟），加快发版速度。
+
+### GCP OIDC 配置（gcr.io 推送）
+
+release.yml 通过 OIDC workload identity 免密钥推送到 gcr.io。首次使用需在 GCP 完成一次性配置：
+
+1. 在 GCP 创建 workload identity pool 与 provider（参考 [GCP 官方文档](https://cloud.google.com/iam/docs/workload-identity-federation)）。
+2. 将 GitHub 仓库加入 provider 的 attribute mapping：
+   ```
+   https://token.actions.githubusercontent.com|repo:anjia0532/discovery-syncer-python
+   ```
+3. 在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 添加：
+
+   | 变量名 | 值 |
+   |---|---|
+   | `GCP_PROJECT_ID` | gcr.io 对应的 GCP 项目 ID |
+   | `GCP_WI_POOL_ID` | workload identity pool ID |
+   | `GCP_WI_PROVIDER_ID` | workload identity provider ID |
+
+4. Docker Hub 推送使用已有的 `HUB_NAME` / `HUB_PWD` secrets，无需额外配置。
+
+### CHANGELOG 生成
+
+`scripts/gen_changelog.py` 从上一个 `v*` tag 到 HEAD 的提交生成 Keep a Changelog 格式条目，
+按 conventional commit 类型（feat / fix / refactor / perf / test / docs / build / chore）自动分组。
+release.yml 在打 tag 前自动调用，也可本地手动运行：
+
+```bash
+python3 scripts/gen_changelog.py --version 3.0.0
+```
+
 ## 待优化点
 
 1. 已解决 ~~目前的同步任务是串行的，如果待同步的量比较大，或者同步时间窗口设置的特别小的情况下，会导致挤压~~
