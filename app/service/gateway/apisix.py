@@ -98,6 +98,21 @@ class Apisix(Gateway):
         self._version_evidence = ""
         declared = str((config.config or {}).get("version") or APISIX_V2).lower()
         self.VERSION = APISIX_V3 if declared in ("3", "v3", "3.x") else APISIX_V2
+        # 复用连接池，避免事件驱动同步时每请求都新建 TCP 连接。
+        self._http = httpx.Client(
+            timeout=10,
+            verify=False,
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            headers={"X-API-KEY": config.config.get("X-API-KEY"),
+                     "Content-Type": "application/json", "Accept": "application/json"},
+        )
+
+    def close(self) -> None:
+        """释放连接池。"""
+        try:
+            self._http.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- 版本能力 -----------------------------------------------------------
     def _cap(self):
@@ -300,10 +315,12 @@ class Apisix(Gateway):
         return data
 
     def apisix_execute(self, method, uri, params, data=None):
-        http_resp = httpx.request(method, f"{self._config.admin_url}{self._config.prefix}{uri}",
-                                  params=params, data=data, timeout=10,
-                                  headers={"X-API-KEY": self._config.config.get("X-API-KEY"),
-                                           "Content-Type": "application/json", "Accept": "application/json"})
+        # 复用连接池：事件驱动同步每次 diff 都会打网关 Admin API，
+        # 旧实现每个请求新建连接，会产生大量 TIME_WAIT。
+        http_resp = self._http.request(
+            method, f"{self._config.admin_url}{self._config.prefix}{uri}",
+            params=params, data=data,
+        )
         resp_txt = http_resp.text
         if http_resp.status_code >= 400:
             logger.warning(

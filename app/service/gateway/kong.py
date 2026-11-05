@@ -43,6 +43,20 @@ class Kong(Gateway):
         self._capability = None
         self._version_evidence = ""
         self.VERSION = 3
+        # 复用连接池，避免事件驱动同步时每请求都新建 TCP 连接。
+        self._http = httpx.Client(
+            timeout=10,
+            verify=False,
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+
+    def close(self) -> None:
+        """释放连接池。"""
+        try:
+            self._http.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- 版本能力 -----------------------------------------------------------
     def _cap(self):
@@ -134,9 +148,11 @@ class Kong(Gateway):
         raise Exception("Unrealized")
 
     def kong_execute(self, method, uri, params, data=None):
-        resp = httpx.request(method, f"{self._config.admin_url}{self._config.prefix}{uri}",
-                             params=params, data=data, timeout=10,
-                             headers={"Content-Type": "application/json", "Accept": "application/json"})
+        # 复用连接池，避免事件驱动同步时每请求都新建 TCP 连接。
+        resp = self._http.request(
+            method, f"{self._config.admin_url}{self._config.prefix}{uri}",
+            params=params, data=data,
+        )
 
         logger.info(
             f"请求 kong 接口, method: {method}, url: {self._config.admin_url}{self._config.prefix}{uri}, 请求参数: {params}, 请求数据: {data}, 响应结果: {resp.text}")

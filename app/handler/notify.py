@@ -89,6 +89,10 @@ def subscriptions() -> Response:
 def versions() -> Response:
     """返回版本能力矩阵命中情况，便于排障多版本适配。"""
     from app.model.config import discovery_clients, gateway_clients
+    from app.tasks.task_syncer import _ensure_clients
+
+    # 遍历需要完整字典，先确保已初始化（避免 reload 窗口期返回空结果）
+    _ensure_clients()
 
     def describe(client: Any) -> Dict[str, Any]:
         cap = getattr(client, "capability", None)

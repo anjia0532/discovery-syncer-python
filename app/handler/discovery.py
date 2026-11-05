@@ -32,8 +32,10 @@ def discovery(discovery_name: Annotated[str, Path(title="discovery_name", descri
     @return: 成功返回 OK
     """
     try:
-        from app.model.config import discovery_clients
-        discovery_client: Discovery = discovery_clients.get(discovery_name)
+        from app.tasks.task_syncer import get_discovery_client
+        # 走 get_discovery_client()：内部带 _ensure_clients()，
+        # 避免 /-/reload 重建字典的窗口期内误返回 404。
+        discovery_client: Discovery = get_discovery_client(discovery_name)
         if not discovery_client:
             return Response(status_code=404, content=f"没有获取到注册中心实例{discovery_name}")
         discovery_instances, last_time = discovery_client.get_service_all_instances(registration.service_name,
@@ -86,8 +88,8 @@ def gateway_to_file(gateway_name: str = Path(title="gateway_name", description="
     @return: 成功返回db-less配置文件
     """
     try:
-        from app.model.config import gateway_clients
-        gateway_client: Gateway = gateway_clients.get(gateway_name)
+        from app.tasks.task_syncer import get_gateway_client
+        gateway_client: Gateway = get_gateway_client(gateway_name)
         if not gateway_client:
             return Response(status_code=404, content=f"没有获取到网关实例{gateway_name}")
         content, file = gateway_client.fetch_admin_api_to_file(file_name)
@@ -112,13 +114,13 @@ async def migrate_gateway(
     @return: 成功返回 OK
     """
     try:
-        from app.model.config import gateway_clients
+        from app.tasks.task_syncer import get_gateway_client
 
-        origin_gateway_client: Gateway = gateway_clients.get(origin_gateway_name)
+        origin_gateway_client: Gateway = get_gateway_client(origin_gateway_name)
         if not origin_gateway_client:
             return Response(status_code=404, content=f"没有获取到数据来源网关实例{origin_gateway_name}")
 
-        target_gateway_client: Gateway = gateway_clients.get(target_gateway_name)
+        target_gateway_client: Gateway = get_gateway_client(target_gateway_name)
         if not target_gateway_client:
             return Response(status_code=404, content=f"没有获取到数据迁入网关实例{target_gateway_name}")
 
@@ -142,9 +144,9 @@ async def restore_gateway(
     @return: 成功返回 OK
     """
     try:
-        from app.model.config import gateway_clients
+        from app.tasks.task_syncer import get_gateway_client
 
-        target_gateway_client: Gateway = gateway_clients.get(target_gateway_name)
+        target_gateway_client: Gateway = get_gateway_client(target_gateway_name)
         if not target_gateway_client:
             return Response(status_code=404, content=f"没有获取到待还原网关实例{target_gateway_name}")
         await target_gateway_client.restore_gateway(body)

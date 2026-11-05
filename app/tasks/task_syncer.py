@@ -24,12 +24,11 @@
 
 from __future__ import annotations
 
-import functools
 import importlib
 import json
 import re
 import threading
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from app.model.syncer_model import DiscoveryInstance, Jobs, Registration
@@ -53,19 +52,38 @@ DEFAULT_RECONCILE_INTERVAL = "@every 5m"
 _manager: Optional[SubscriptionManager] = None
 _clients_lock = threading.Lock()
 _reloading = False
+# target_id -> 可序列化 dict，供事件投递 O(1) 查找（reload 时重建）
+_target_index: Dict[str, dict] = {}
 
 
 # ---------------------------------------------------------------------------
 # 订阅管理器
 # ---------------------------------------------------------------------------
 def _find_target(target_id: str) -> Optional[dict]:
-    """按 id 找到 target 配置并转成可序列化 dict（供事件投递）。"""
+    """按 id 找到 target 配置并转成可序列化 dict（供事件投递）。
+
+    每次事件都会调用，因此用 ``reload`` 时重建的索引避免线性扫描。
+    索引缺失时回退到线性查找，保证正确性。
+    """
     from app.model.config import settings
+
+    cached = _target_index.get(target_id)
+    if cached is not None:
+        return cached
 
     for target in (settings.config.targets or []):
         if target.id == target_id:
             return target.model_dump()
     return None
+
+
+def _rebuild_target_index() -> None:
+    """在 ``reload`` 末尾重建 target 索引，供事件投递 O(1) 查找。"""
+    from app.model.config import settings
+
+    index = {t.id: t.model_dump() for t in (settings.config.targets or []) if t.id}
+    _target_index.clear()
+    _target_index.update(index)
 
 
 def _publish_sync_service(target_id: str, service_name: str, event: Any) -> None:
@@ -86,7 +104,11 @@ def _publish_sync_service(target_id: str, service_name: str, event: Any) -> None
             "ts": event.ts,
         },
     }
-    get_task_bus().submit(sync_service, **payload)
+    try:
+        get_task_bus().submit(sync_service, **payload)
+    except RuntimeError:
+        # 停机竞态：shutdown 已关闭 TaskBus，此时直接丢弃事件。
+        logger.debug("TaskBus 已关闭，丢弃事件 target=%s service=%s", target_id, service_name)
 
 
 def get_manager(debounce_ms: Optional[int] = None) -> SubscriptionManager:
@@ -132,18 +154,20 @@ def _ensure_clients() -> None:
             _reloading = False
 
 
-@functools.lru_cache()
 def get_discovery_client(name: str) -> Discovery:
-    """按名称取注册中心客户端。"""
+    """按名称取注册中心客户端。
+
+    刻意不用 ``lru_cache``：字典查找本身 O(1)，缓存没有收益，反而会
+    把「启动未完成时的 None」永久缓存住（后续 reload 也不会刷新）。
+    """
     from app.model.config import discovery_clients
 
     _ensure_clients()
     return discovery_clients.get(name)
 
 
-@functools.lru_cache()
 def get_gateway_client(name: str) -> Gateway:
-    """按名称取网关客户端。"""
+    """按名称取网关客户端。理由同 :func:`get_discovery_client`。"""
     from app.model.config import gateway_clients
 
     _ensure_clients()
@@ -157,10 +181,18 @@ def clear_client() -> None:
         _manager.stop_all()
     from app.model.config import discovery_clients, gateway_clients
 
+    # 关闭旧客户端持有的 httpx 连接池，否则每次 reload 都会泄漏一批连接。
+    for client in list(discovery_clients.values()) + list(gateway_clients.values()):
+        closer = getattr(client, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:  # noqa: BLE001
+                pass
+
     discovery_clients.clear()
-    get_discovery_client.cache_clear()
     gateway_clients.clear()
-    get_gateway_client.cache_clear()
+    _target_index.clear()
 
     _engine, sqla_helper = db.get_sqla_helper()
     Jobs.create_table_if_not_exists(sqla_helper)
@@ -283,7 +315,10 @@ def syncer(target: dict) -> None:
         return
     services = discovery_client.get_all_service(target.get("config"))
     if len(services) == 0:
+        # 上游暂无服务也算「对账成功完成」，必须刷新心跳，
+        # 否则空集群/全服务下线会被 /health 误判为失联。
         logger.info(f"没有获取到服务列表{target}")
+        get_manager().heartbeat(target.get("id") or "")
         return
 
     logger.info(f"全量对账服务列表, 作业: {target.get('id')} services: {[s.name for s in services]}")
@@ -470,6 +505,9 @@ def reload() -> None:
     debounce = enabled_targets[0].subscribe.debounce_ms
     manager = get_manager(debounce)
     summary = manager.rebuild(specs)
+    # 索引必须在订阅装配后重建：Provider 一旦启动就可能立刻推事件，
+    # 而事件传递依赖 _find_target 拿到 target 配置。
+    _rebuild_target_index()
     logger.info("订阅装配完成: %s", json.dumps(
         {k: {"version": v["version"], "push": v["push_transport"],
              "providers": [p["kind"] for p in v["providers"]]} for k, v in summary.items()},

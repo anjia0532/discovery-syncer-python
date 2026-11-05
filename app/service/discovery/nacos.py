@@ -30,6 +30,15 @@ class Nacos(Discovery):
 
     def __init__(self, config):
         super().__init__(config)
+        # 复用连接池：旧实现每个请求 httpx.request() 都新建 TCP 连接，
+        # 订阅模式下事件驱动会显著放大请求量（每次 diff 都要拉服务+实例），
+        # 高 QPS 时会快速耗尽本地端口。keep-alive 让同 host 的连接可复用。
+        self._http = httpx.Client(
+            timeout=10,
+            verify=False,
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
 
     # -- 版本能力 -----------------------------------------------------------
     def _cap(self):
@@ -208,16 +217,20 @@ class Nacos(Discovery):
     def nacos_execute(self, method="GET", uri=None, params=None, data=None):
         """执行 Nacos HTTP OpenAPI 请求，URL 前缀按版本自动选择。"""
         url = self._url(uri or "")
-        resp_txt = httpx.request(method, url,
-                                 params=params, data=data, timeout=10,
-                                 headers={"Content-Type": "application/json",
-                                          "Accept": "application/json"}).text
+        resp_txt = self._http.request(method, url, params=params, data=data).text
         logger.info("请求 nacos 接口, method: %s, url: %s, 请求参数: %s, 请求数据: %s, 响应结果: %s",
                     method, url, params, data, resp_txt)
         try:
             return json.loads(resp_txt)
         except (ValueError, TypeError):
             return resp_txt
+
+    def close(self) -> None:
+        """释放连接池（仅在客户端被替换/停机时调用）。"""
+        try:
+            self._http.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- 解析辅助 -----------------------------------------------------------
     @staticmethod

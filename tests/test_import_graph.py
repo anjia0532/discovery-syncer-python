@@ -29,10 +29,13 @@ FORBIDDEN = {"funboost", "redis", "persist_queue"}
 
 
 def _production_files():
-    """排除测试、缓存与 .workbuddy 目录。"""
+    """排除测试、缓存、虚拟环境与 .workbuddy 目录。"""
     for path in sorted(ROOT.rglob("*.py")):
         text = str(path).replace("\\", "/")
-        if "__pycache__" in text or "/tests/" in text or "/.workbuddy/" in text:
+        if any(skip in text for skip in (
+            "__pycache__", "/tests/", "/.workbuddy/",
+            "/.venv/", "/venv/", "/site-packages/", "/node_modules/",
+        )):
             continue
         yield path
 

@@ -50,13 +50,15 @@ class Handler(BaseHTTPRequestHandler):
         if port in NACOS_VERSIONS:
             version = NACOS_VERSIONS[port]
             major = int(version.split(".")[0])
-            if path.endswith("v1/console/server/state") or path.endswith("v2/console/server/state"):
-                if major == 3:
-                    return self._send(404, {})       # 3.x 不再兼容 v1/v2 OpenAPI
-                return self._send(200, {"version": version})
-            if path.endswith("v3/console/server/state"):
+            # 版本探测判据必须精确：3.x 的 v3 路径只有真 3.x 才应返回非 404，
+            # 否则 1.x 会被 "ns/instance/list" 之类的宽匹配误判成 3.x。
+            if "/v3/" in path:
                 if major != 3:
                     return self._send(404, {})
+                return self._send(200, {"list": [], "total": 0})
+            if "v1/console/server/state" in path or "v2/console/server/state" in path:
+                if major == 3:
+                    return self._send(404, {})       # 3.x 不再兼容 v1/v2 OpenAPI
                 return self._send(200, {"version": version})
             if "ns/catalog/services" in path:
                 return self._send(200, {"count": 0, "list": []})
@@ -119,6 +121,10 @@ class Handler(BaseHTTPRequestHandler):
                     targets[target] = body.get("weight", 100)
                     return self._send(201, {"target": target})
                 if method == "PUT":
+                    # 真实 Kong 3.x：PUT 只更新已存在的 target，不存在则 404（无 upsert）。
+                    # mock 必须忠实反映这一点，否则会掩盖「3.x 直接 PUT 会失败」的真实缺陷。
+                    if major >= 3 and target not in targets:
+                        return self._send(404, {"message": "Not found"})
                     targets[target] = body.get("weight", 100)
                     return self._send(200, {"target": target})
                 if method == "DELETE":

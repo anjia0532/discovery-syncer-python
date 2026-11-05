@@ -56,15 +56,24 @@ def show_memory(num: Annotated[int, Query(title="num", description="前几，默
     显示内存占用最大的前N个对象
     @rtype: str
     @return: 成功返回 OK
+
+    注意：``gc.get_objects()`` 会遍历整个堆并在调用期间持有 GIL，
+    属于**诊断接口**，不要放进常规探活路径，也不要在高 QPS 下调用。
+    这里用 ``heapq.nlargest`` 流式取 top-N，避免像旧实现那样
+    把所有对象和大小都堆进列表再排序（内存翻倍）。
     """
-    objects_list = []
-    contents = []
-    for obj in gc.get_objects():
-        size = sys.getsizeof(obj)
-        objects_list.append((obj, size))
-    sorted_values = sorted(objects_list, key=lambda x: x[1], reverse=True)
-    for obj, size in sorted_values[:num]:
-        contents.append(f"OBJ: {id(obj)}, TYPE:{type(obj)}, SIZE: {size / 1024 / 1024:.2f}MB, REPR: {str(obj)[:100]}")
+    import heapq
+
+    num = max(1, min(num, 200))  # 限制上限，避免一次输出几百 MB
+    top = heapq.nlargest(
+        num,
+        ((sys.getsizeof(obj), id(obj), obj) for obj in gc.get_objects()),
+        key=lambda item: item[0],
+    )
+    contents = [
+        f"OBJ: {oid}, TYPE:{type(obj)}, SIZE: {size / 1024 / 1024:.2f}MB, REPR: {str(obj)[:100]}"
+        for size, oid, obj in top
+    ]
     return Response(content="\n".join(contents))
 
 

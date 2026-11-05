@@ -197,18 +197,31 @@ class EventBus:
         publisher: Optional[Publisher] = None,
         tick: float = 0.02,
         clock: Callable[[], float] = time.monotonic,
+        max_queue: int = 10000,
     ) -> None:
+        """初始化事件总线。
+
+        Args:
+            debounce_ms: 同一服务事件的合并窗口（毫秒）。
+            publisher: 事件出队后的投递函数。
+            tick: 消费线程轮询间隔（秒）。
+            clock: 单调时钟（测试可注入）。
+            max_queue: 入队队列上限。上游突发推送时若消费不及，
+                超过上限的事件按 ``dropped`` 丢弃——同步本身有 5m 全量
+                对账兜底，宁丢事件也不让内存无界增长。
+        """
         self._debounce = max(0, debounce_ms) / 1000.0
         self._publisher: Publisher = publisher or (lambda *_args, **_kwargs: None)
         self._tick = tick
         self._clock = clock
-        self._queue: "queue.Queue[Tuple[str, ChangeEvent]]" = queue.Queue()
+        self._queue: "queue.Queue[Tuple[str, ChangeEvent]]" = queue.Queue(maxsize=max_queue)
         self._pending: Dict[Tuple[str, str], Tuple[float, str, ChangeEvent]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._published = 0
         self._dropped = 0
+        self._stats_lock = threading.Lock()
         self._log = logging.getLogger("subscription.EventBus")
 
     def start(self) -> None:
@@ -228,10 +241,24 @@ class EventBus:
             self._pending.clear()
 
     def emit(self, target_id: str, event: ChangeEvent) -> None:
-        """投递一条事件（非阻塞）。"""
+        """投递一条事件（非阻塞）。
+
+        队列满时丢弃并计入 ``dropped``，绝不阻塞上游推送线程。
+        丢弃是安全的：同步有 5 分钟全量对账兜底，不会永久丢失变更。
+        """
         if not event.service_name:
             return
-        self._queue.put((target_id, event))
+        try:
+            self._queue.put_nowait((target_id, event))
+        except queue.Full:
+            with self._stats_lock:
+                self._dropped += 1
+                dropped = self._dropped
+            if dropped % 100 == 1:
+                self._log.warning(
+                    "事件队列已满(maxsize=%s)，丢弃事件 target=%s service=%s 累计丢弃=%s",
+                    self._queue.maxsize, target_id, event.service_name, dropped,
+                )
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -277,4 +304,6 @@ class EventBus:
 
     @property
     def stats(self) -> Dict[str, int]:
-        return {"published": self._published, "dropped": self._dropped, "pending": len(self._pending)}
+        with self._lock:
+            return {"published": self._published, "dropped": self._dropped,
+                    "pending": len(self._pending)}

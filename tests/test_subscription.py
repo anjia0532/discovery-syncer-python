@@ -70,6 +70,23 @@ def test_event_bus_separate_services(sub_core):
     assert sorted(published) == ["svc-a", "svc-b"]
 
 
+def test_event_bus_queue_full_drops_instead_of_blocking(sub_core):
+    """队列满时必须丢弃而非阻塞上游推送线程（避免内存无界增长）。"""
+    bus = sub_core.EventBus(debounce_ms=1000, publisher=lambda *a: None, max_queue=2)
+    # 不启动消费线程：队列不会排空，第 3 条必然满
+    for i in range(5):
+        bus.emit("t1", sub_core.ChangeEvent(service_name=f"svc-{i}"))
+    assert bus.stats["dropped"] == 3, f"应丢弃 3 条，实际 {bus.stats}"
+    assert bus._queue.qsize() == 2
+
+
+def test_event_bus_stats_has_pending(sub_core):
+    bus = sub_core.EventBus(debounce_ms=1000, publisher=lambda *a: None)
+    bus.emit("t1", sub_core.ChangeEvent(service_name="svc-a"))
+    assert bus.stats["pending"] >= 0
+    assert set(bus.stats) == {"published", "dropped", "pending"}
+
+
 def test_snapshot_polling_only_emits_on_change(sub_providers):
     events = []
     state = {"items": [_ins("1.1.1.1", 80)]}
