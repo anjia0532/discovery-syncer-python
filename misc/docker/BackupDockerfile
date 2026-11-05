@@ -8,24 +8,54 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/opt/discovery-syncer/
 ENV TZ=Asia/Shanghai
 
+# kubectl 版本由构建参数指定（锁定版本，避免依赖 stable.txt 在线查询）。
+# 置空（--build-arg KUBECTL_VERSION=）则跳过安装：直连模式不需要 kubectl。
+ARG KUBECTL_VERSION=v1.31.4
+# kubectl 下载源。官方 dl.k8s.io 在部分网络不可达，可换镜像：
+#   --build-arg KUBECTL_BASE=https://mirrors.aliyun.com/kubernetes-release/release
+ARG KUBECTL_BASE=https://dl.k8s.io/release
+
 WORKDIR /opt/discovery-syncer/
 
 RUN pip install -i https://mirrors.aliyun.com/pypi/simple --no-cache-dir --upgrade GitPython httpx
 
-RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list && \
-  apt update && \
-  apt install -y --no-install-recommends git curl ca-certificates && \
-  rm -rf /var/lib/apt/lists/*
+# 换 apt 源。注意 Debian bookworm 起改用 /etc/apt/sources.list.d/debian.sources，
+# 老路径 /etc/apt/sources.list 可能不存在，`sed -i` 会因读不到文件返回 2 而中断构建。
+# 这里对两种路径都做兼容处理（存在才改），保证 bullseye/bookworm/trixie 都能构建。
+RUN if [ -f /etc/apt/sources.list ]; then \
+      sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list; \
+    fi; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && \
+    apt-get install -y --no-install-recommends git curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-# 安装 kubectl（用于 port-forward 连接 K8s 内的 syncer）
-RUN KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)" && \
-  curl -fsSL -o /usr/local/bin/kubectl \
-    "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" && \
-  chmod +x /usr/local/bin/kubectl && \
-  kubectl version --client=true
+# 安装 kubectl（用于 port-forward 连接 K8s 内的 syncer）。
+# 关键：下载失败**不阻断构建**。原实现用 `curl && ... && kubectl version`，
+# 任一环节（含网络抖动、dl.k8s.io 不可达）都会让整个镜像构建失败，
+# 连累 release 流水线。这里降级为「可选能力」：镜像仍可用于直连模式，
+# 只是 kubectl_forward 配置在运行时会给出明确报错。
+RUN if [ -n "$KUBECTL_VERSION" ]; then \
+      URL="${KUBECTL_BASE}/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
+      echo "尝试安装 kubectl: ${URL}"; \
+      if curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 10 --max-time 60 \
+              -o /usr/local/bin/kubectl "$URL"; then \
+        chmod +x /usr/local/bin/kubectl; \
+        kubectl version --client=true || true; \
+        echo "kubectl 安装成功"; \
+      else \
+        echo "WARNING: kubectl 下载失败（${URL}），镜像仍可用但不支持 kubectl_forward。" >&2; \
+        rm -f /usr/local/bin/kubectl; \
+      fi; \
+    else \
+      echo "KUBECTL_VERSION 为空，跳过 kubectl 安装"; \
+    fi
 
 RUN git config --global http.sslVerify false
 
 ADD ./tools/backup.py /opt/discovery-syncer/backup.py
 
+# ENTRYPOINT 用 exec 形式，不能带 shell 重定向（">" 会被当成参数传给 python）。
 ENTRYPOINT ["python3", "/opt/discovery-syncer/backup.py"]

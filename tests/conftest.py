@@ -136,6 +136,97 @@ def app_config(stub_environment):
     return load_module("app.model.config", "app/model/config.py", package="app.model")
 
 
+# ---------------------------------------------------------------------------
+# 旧版 config.yaml 的兼容性测试数据
+# ---------------------------------------------------------------------------
+# 真实 config.yaml 被 .gitignore 排除（含生产 API key / 内部地址），CI 检出后不存在。
+# 因此测试**不能**依赖该文件，否则本地通过、CI 必失败。
+# 这里内置一份「与旧版结构完全等价」的合成配置：覆盖旧版全部字段
+# （fetch-interval / maximum-interval-sec / exclude-service / upstream-prefix /
+#  config.template / healthcheck / 显式 version），且不含任何真实凭据。
+# 若本地存在真实 config.yaml，则优先用它（验证真实配置也能零改动加载）。
+LEGACY_CONFIG_YAML = """
+common:
+  syncer-api-key: Abcdef1234567890!@#Abcdef1234567890
+
+discovery-servers:
+    nacos-pre:
+        type: nacos
+        weight: 100
+        prefix: /nacos/v1/
+        host: http://nacos.example.com
+
+gateway-servers:
+    kong371:
+        type: kong
+        admin-url: http://127.0.0.1:8001
+        prefix: /
+        config:
+            version: 3.7.1
+    apisix3x:
+        type: apisix
+        admin-url: http://127.0.0.1:31980
+        prefix: /apisix/admin/
+        config:
+            X-API-KEY: 00000000000000000000000000000000
+            version: v3
+    apisix2x:
+        type: apisix
+        admin-url: http://127.0.0.1:29180
+        prefix: /apisix/admin/
+        config:
+            X-API-KEY: 00000000000000000000000000000000
+            version: v2
+
+targets:
+    -   discovery: nacos-pre
+        gateway: apisix3x
+        enabled: false
+        fetch-interval: "@every 10s"
+        maximum-interval-sec: 60
+        name: mall
+        upstream-prefix: mall
+        exclude-service: ['mall-search', 'mall-admin']
+        config:
+            groupName: DEFAULT_GROUP
+            namespaceId: mall
+            template: |
+                {
+                    "id": "$name",
+                    "name": "$name",
+                    "nodes": $nodes,
+                    "type": "roundrobin"
+                }
+        healthcheck:
+              type: http
+              uri: /
+              timeout-sec: 1
+              interval: "@every 10s"
+              min-hosts: 0
+              method: GET
+              healthy:
+                http_statuses: [404, 200, 201]
+                successes: 1
+              unhealthy:
+                http_statuses: [400, 401, 404, 500, 502, 503, 504]
+                failures: 1
+                timeouts: 1
+"""
+
+
+@pytest.fixture(scope="session")
+def legacy_config_yaml() -> str:
+    """返回一份旧版结构的 config.yaml 文本。
+
+    优先使用仓库根目录的真实 ``config.yaml``（开发者本地场景，验证真实配置兼容），
+    不存在时回落到内置等价配置（CI 场景，该文件被 gitignore 排除）。
+    """
+    real = ROOT / "config.yaml"
+    if real.exists():
+        return real.read_text(encoding="utf-8")
+    return LEGACY_CONFIG_YAML
+
+
 @pytest.fixture(scope="session")
 def task_context(stub_environment):
     return load_module("core.lib.task_context", "core/lib/task_context.py", package="core.lib")

@@ -88,25 +88,41 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "TAG=v$VERSION" >> "$GITHUB_ENV"
 
-      - name: Check tag does not exist
+      - name: Detect existing tag (idempotent)
         run: |
-          if git ls-remote --tags origin "refs/tags/${{ env.TAG }}" | grep -q .; then
-            echo "::error::Tag ${{ env.TAG }} 已存在，请检查版本号"
-            exit 1
+          # tag 已存在时不报错，改为「跳过创建、继续推镜像与 Release」，
+          # 让发版可重跑（修复上次失败后重试的场景）。
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "TAG_EXISTS=true" >> "$GITHUB_ENV"
+            echo "::notice::Tag $TAG 已存在，将跳过打 tag，直接复用"
+          else
+            echo "TAG_EXISTS=false" >> "$GITHUB_ENV"
+            echo "Tag $TAG 不存在，将在测试通过后创建"
           fi
 
       - name: Generate CHANGELOG
+        if: env.TAG_EXISTS == 'false'
         run: |
           python scripts/gen_changelog.py --version "$VERSION"
 
-      - name: Commit CHANGELOG and create tag
+      - name: Commit CHANGELOG (skip if unchanged)
+        if: env.TAG_EXISTS == 'false'
         run: |
+          # CHANGELOG 已包含该版本（例如本地已手动写入）时无需再提交。
+          if git diff --quiet CHANGELOG.md && git ls-files --error-unmatch CHANGELOG.md >/dev/null 2>&1; then
+            echo "::notice::CHANGELOG.md 无变化，跳过提交"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
           git commit -m "chore(release): v$VERSION changelog"
-          git tag "$TAG"
           git push origin "HEAD:${{ github.ref_name }}"
+
+      - name: Create tag (skip if exists)
+        if: env.TAG_EXISTS == 'false'
+        run: |
+          git tag "$TAG"
           git push origin "$TAG"
 
       - name: Create GitHub Release
@@ -116,6 +132,8 @@ jobs:
           name: v${{ github.event.inputs.version }}
           body_path: CHANGELOG.md
           generate_release_notes: false
+          # Release 已存在时允许更新（配合 tag 的幂等逻辑，使发版可重跑）
+          allowUpdates: true
 
       - name: Auth to gcr.io (OIDC workload identity)
         id: gcr_auth
