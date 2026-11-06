@@ -174,7 +174,46 @@ def insert_into_changelog(section: str, path: Path) -> None:
     path.write_text(new_content, encoding="utf-8")
 
 
+def version_already_documented(version: str, path: Path) -> bool:
+    """CHANGELOG.md 是否已包含该版本段落。
+
+    用于幂等：本地已手写详细版本说明后再跑发版，CI 不应再插入一个自动生成的
+    重复段落（否则 CHANGELOG 里会出现两个 ``## [3.0.2]``）。
+    """
+    if not path.exists():
+        return False
+    return re.search(rf"^## \[{re.escape(version)}\]", path.read_text(encoding="utf-8"),
+                     re.MULTILINE) is not None
+
+
+def extract_version_section(version: str, path: Path) -> str:
+    """从 CHANGELOG.md 中提取指定版本的完整段落（含标题，至下一个 ``## [`` 前）。
+
+    Args:
+        version: 版本号，如 ``3.0.2``。
+        path: CHANGELOG.md 路径。
+
+    Returns:
+        该版本段落文本（去掉首尾空行）；未找到时返回空串。
+    """
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    out: list[str] = []
+    started = False
+    head = re.compile(rf"^## \[{re.escape(version)}\]")
+    nxt = re.compile(r"^## \[")
+    for line in lines:
+        if not started and head.match(line):
+            started = True
+        elif started and nxt.match(line):
+            break
+        if started:
+            out.append(line)
+    return "\n".join(out).strip()
+
+
 def main() -> int:
+
     parser = argparse.ArgumentParser(description="生成 CHANGELOG 条目")
     parser.add_argument("--version", required=True, help="新版本号，如 3.0.2")
     parser.add_argument("--since-tag", default=None, help="起始 tag，默认取版本号 < 当前版本的最大 tag")
@@ -209,6 +248,18 @@ def main() -> int:
         print(f"  [{ctype}] {subject}")
 
     day = args.date or date.today().isoformat()
+    changelog = Path(args.changelog)
+
+    # 幂等：版本段落已在 CHANGELOG.md 中（本地手写详细版后再发版），
+    # 用**已有段落**作为本版正文，不再插入自动生成版，避免重复 ``## [x.y.z]``。
+    if version_already_documented(args.version, changelog):
+        existing_section = extract_version_section(args.version, changelog)
+        if args.body_out:
+            Path(args.body_out).write_text(existing_section + "\n", encoding="utf-8")
+            print(f"\n已写出版本正文（复用 CHANGELOG 既有段落）: {args.body_out}")
+        print(f"CHANGELOG.md 已包含 [{args.version}]，跳过插入（幂等）")
+        return 0
+
     section = build_section(args.version, commits, day)
 
     # 仅本版正文 -> 独立文件（GitHub Release body 用它，不累积）
@@ -218,8 +269,8 @@ def main() -> int:
 
     # 累积历史 -> CHANGELOG.md
     if not args.skip_changelog:
-        insert_into_changelog(section, Path(args.changelog))
-        print(f"已写入 {args.changelog}")
+        insert_into_changelog(section, changelog)
+        print(f"已写入 {changelog}")
     else:
         print("已跳过 CHANGELOG.md（--skip-changelog）")
     return 0
