@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.2] - 2026-11-06
+
+### Bug Fixes
+
+* **UDP 续约周期与失联判定三处修复**（线上「每 2 秒刷全量服务列表」的根因）：
+  1. 续约/新服务发现周期不再复用 `fetch-interval`（生产常见 1~2s，导致每 2 秒
+     拉一次全量服务列表、日志刷屏并对 Nacos 施压），留空默认 `@every 5m`
+     对齐全量对账，下限保护 5s；新服务晚几分钟同步无实际损失（对账会覆盖）。
+  2. `refresh_subscriptions` 旧实现只对新增服务发订阅，已订阅服务永不重发——
+     Nacos 服务端僵尸判定/重启清掉订阅后推送**静默永久中断**。现每轮对全部服务
+     重发登记（幂等 GET），返回值语义不变（仅统计新发现数）。
+  3. 推送失联判定从 refresh 循环移到 `health()` 实时计算（supervisor 5s 巡检
+     即可看到降级），`push_timeout` 与 refresh 周期解耦（独立默认 120s，
+     不再 refresh_sec×3）；启动宽限按 `start()` 时刻计时，避免刚启动误判降级
+     叠加高频 poll。
+* **GitHub Release 正文只写当前版本**：Release 页面不再累积历史版本段落
+  （`body_path` 改用「仅本版」`.release-body.md`）；`CHANGELOG.md` 仍保持完整
+  历史。顺带修复 tag 已存在时 `--since-tag` 自动回退取到自身导致段落为空的 bug。
+
+### Refactoring
+
+* **发版镜像仓库改为 Docker Hub + ghcr.io，移除 gcr.io**：
+  ghcr.io 使用 Actions 内置 `GITHUB_TOKEN` 认证（`packages: write` 权限），
+  零外部配置；不再需要 GCP OIDC 三变量与 `id-token`。
+  主镜像与 backup 镜像同步推送 `{version}` / `latest` / `{sha}`。
+  注意：ghcr 首推默认私有，需公开请在 Settings → Packages 调整可见性。
+
+### Chores
+
+* 升级版本号到 3.0.2
+
+### Tests
+
+* UDP 续约测试改为断言「每轮全量重发 + 不重复产出事件」；
+  新增失联实时判定、启动宽限、未启动不判失联 3 项（64 项全通过）。
+* WSL 真实应用冒烟 9/9 无回归（RSS +0.5%、线程 +1）。
+
 ## [3.0.1] - 2026-11-06
 
 新增**可选**的多副本集群模式。默认关闭，单副本部署行为与 3.0.0 完全一致，不依赖 Redis。
