@@ -554,37 +554,32 @@ python3 tests/integration/run_local_matrix.py     # 需 pip install httpx
 |---|---|---|
 | `.github/workflows/ci.yml` | PR / push master | 单测 + 冒烟（快速反馈） |
 | `.github/workflows/docker-image.yml` | push master | Docker Hub dev 镜像（`latest`） |
-| `.github/workflows/release.yml` | **手动** `workflow_dispatch` | 全量测试 → 打 tag → 写 CHANGELOG → 推 gcr.io + Docker Hub |
+| `.github/workflows/release.yml` | **手动** `workflow_dispatch` | 全量测试 → 打 tag → 写 CHANGELOG → 推 Docker Hub + ghcr.io |
 
 ### 发版步骤
 
 1. 确保工作区在 `master` 分支且已合并所有待发布改动。
-2. 在 GitHub Actions 页面选择 **Release** → **Run workflow**，输入版本号（如 `3.0.0`）。
+2. 在 GitHub Actions 页面选择 **Release** → **Run workflow**，输入版本号（`3.0.0` 或 `v3.0.0` 均可）。
 3. 工作流自动执行：
-   - **test 作业**：单测（48 项）+ 应用冒烟（含内存压力）+ Docker 多版本矩阵契约验证。
-   - 测试通过后进入 **release 作业**：生成 CHANGELOG → 打 tag `v{version}` → 创建 GitHub Release → 推送镜像到 `gcr.io` 与 Docker Hub。
-4. 镜像标签：`{version}`、`latest`、`{sha}` 三个。
+   - **test 作业**：单测 + 应用冒烟（含内存压力）+ Docker 多版本矩阵契约验证。
+   - 测试通过后进入 **release 作业**：生成 CHANGELOG → 打 tag `v{version}` → 创建 GitHub Release → 推送镜像到 Docker Hub 与 ghcr.io。
+4. 镜像标签：`{version}`、`latest`、`{sha}` 三个，两个仓库同步发布：
+   - `anjia0532/discovery-syncer-python`（Docker Hub）
+   - `ghcr.io/anjia0532/discovery-syncer-python`
+   - backup 工具镜像同步推送（`-backup` 后缀）
 
 > 可选：`skip_matrix` 勾选可跳过 Docker 矩阵（仅单测 + 冒烟），加快发版速度。
 
-### GCP OIDC 配置（gcr.io 推送）
+### 镜像仓库认证
 
-release.yml 通过 OIDC workload identity 免密钥推送到 gcr.io。首次使用需在 GCP 完成一次性配置：
+| 仓库 | 认证方式 | 需要的配置 |
+|---|---|---|
+| Docker Hub | `HUB_NAME` / `HUB_PWD` secrets | 已有，无需改动 |
+| ghcr.io | Actions 内置 `GITHUB_TOKEN` + `packages: write` 权限 | **零配置** |
 
-1. 在 GCP 创建 workload identity pool 与 provider（参考 [GCP 官方文档](https://cloud.google.com/iam/docs/workload-identity-federation)）。
-2. 将 GitHub 仓库加入 provider 的 attribute mapping：
-   ```
-   https://token.actions.githubusercontent.com|repo:anjia0532/discovery-syncer-python
-   ```
-3. 在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 添加：
-
-   | 变量名 | 值 |
-   |---|---|
-   | `GCP_PROJECT_ID` | gcr.io 对应的 GCP 项目 ID |
-   | `GCP_WI_POOL_ID` | workload identity pool ID |
-   | `GCP_WI_PROVIDER_ID` | workload identity provider ID |
-
-4. Docker Hub 推送使用已有的 `HUB_NAME` / `HUB_PWD` secrets，无需额外配置。
+> ghcr.io 镜像首次推送后默认**私有**。若需匿名拉取，在仓库
+> Settings → Packages → discovery-syncer-python 中将可见性改为 Public。
+> 历史版本曾推送 gcr.io（需 GCP OIDC 三变量），v3.0.1 起已移除。
 
 ### CHANGELOG 生成
 

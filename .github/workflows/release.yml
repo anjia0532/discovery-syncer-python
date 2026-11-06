@@ -1,15 +1,18 @@
 name: Release
 
-# 手动触发发版：填版本号 -> 跑全部测试 -> 通过则打 tag + 写 CHANGELOG + 推 gcr.io / Docker Hub
+# 手动触发发版：填版本号 -> 跑全部测试 -> 通过则打 tag + 写 CHANGELOG + 推 Docker Hub / GitHub Container Registry
 #
-# 前置条件（仓库 Settings → Variables）：
-#   GCP_PROJECT_ID     gcr.io 对应的 GCP 项目 ID
-#   GCP_WI_POOL_ID     OIDC workload identity pool ID
-#   GCP_WI_PROVIDER_ID OIDC workload identity provider ID
+# 推送目标：
+#   Docker Hub   anjia0532/discovery-syncer-python:<version>
+#   GitHub ghcr.io/anjia0532/discovery-syncer-python:<version>
+#
+# ghcr.io 用 Actions 内置的 GITHUB_TOKEN 认证，无需任何 GCP/OIDC 配置。
+#
 # 前置条件（仓库 Settings → Secrets）：
 #   HUB_NAME / HUB_PWD  Docker Hub 账号（已有）
 #
-# OIDC 配置步骤见 README「发版流程」章节。
+# ghcr 镜像默认私有：在 Settings → Packages → discovery-syncer-python
+# 将可见性改为 Public，或拉取方使用 GITHUB_TOKEN 拉取。
 
 on:
   workflow_dispatch:
@@ -24,9 +27,11 @@ on:
         type: boolean
         default: false
 
+# contents: 打 tag；packages: 推镜像（ghcr）；
+# 不再需要 id-token:write（已移除 gcr OIDC）。
 permissions:
   contents: write
-  id-token: write
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -35,7 +40,8 @@ concurrency:
 env:
   PYTHON_VERSION: '3.11'
   IMAGE_NAME: discovery-syncer-python
-  DOCKERHUB_USER: anjia0532
+  # Docker Hub 与 ghcr 共用同一个命名空间（个人账户）
+  REGISTRY_NS: anjia0532
 
 jobs:
   test:
@@ -146,52 +152,45 @@ jobs:
           # Release 已存在时允许更新（配合 tag 的幂等逻辑，使发版可重跑）
           allowUpdates: true
 
-      - name: Auth to gcr.io (OIDC workload identity)
-        id: gcr_auth
-        # 未配置 GCP 变量时跳过 gcr 推送，只推 Docker Hub，不阻断发版。
-        if: vars.GCP_PROJECT_ID != '' && vars.GCP_WI_POOL_ID != '' && vars.GCP_WI_PROVIDER_ID != ''
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: >-
-            projects/${{ vars.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/${{ vars.GCP_WI_POOL_ID }}/providers/${{ vars.GCP_WI_PROVIDER_ID }}
-          token_format: access_token
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to gcr.io
-        if: steps.gcr_auth.outcome == 'success'
-        uses: docker/login-action@v3
-        with:
-          registry: gcr.io
-          username: oauth2accesstoken
-          password: ${{ steps.gcr_auth.outputs.access_token }}
-
+      # ---- 登录 Docker Hub + ghcr ------------------------------------------------
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.HUB_NAME }}
           password: ${{ secrets.HUB_PWD }}
 
-      - name: Build and push to gcr.io
-        if: steps.gcr_auth.outcome == 'success'
+      # ghcr.io 用 Actions 内置 GITHUB_TOKEN，无需任何外部配置。
+      # username 用触发工作流的 actor（与 GITHUB_TOKEN 属主一致）。
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- 主镜像（discovery-syncer-python）----------------------------------------
+      # 先推 ghcr 再推 Docker Hub；两边共用同一份 build 缓存可省一半构建时间。
+      - name: Build and push to ghcr.io
         uses: docker/build-push-action@v6
         with:
           context: .
           file: misc/docker/Dockerfile
           push: true
           tags: |
-            gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
-            gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:latest
-            gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ghcr.io/${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+            ghcr.io/${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           labels: |
             maintainer=AnJia <anjia0532@gmail.com>
             org.opencontainers.image.description=从注册中心(如Nacos,Eureka)同步实例信息到网关服务(如Apisix,Kong)
             org.opencontainers.image.title=discovery-syncer-python
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=gcr
-          cache-to: type=gha,mode=max,scope=gcr
+          cache-from: type=gha,scope=ghcr
+          cache-to: type=gha,mode=max,scope=ghcr
 
       - name: Build and push to Docker Hub
         uses: docker/build-push-action@v6
@@ -200,9 +199,9 @@ jobs:
           file: misc/docker/Dockerfile
           push: true
           tags: |
-            ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
-            ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+            ${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           labels: |
             maintainer=AnJia <anjia0532@gmail.com>
             org.opencontainers.image.description=从注册中心(如Nacos,Eureka)同步实例信息到网关服务(如Apisix,Kong)
@@ -212,27 +211,26 @@ jobs:
           cache-from: type=gha,scope=dockerhub
           cache-to: type=gha,mode=max,scope=dockerhub
 
-      # ---- 备份镜像（tools/backup.py）------------------------------------
+      # ---- 备份镜像（tools/backup.py）------------------------------
       # 主镜像之外必须一并发 backup 镜像，否则发版后备份工具仍是旧版。
-      - name: Build and push backup to gcr.io
-        if: steps.gcr_auth.outcome == 'success'
+      - name: Build and push backup to ghcr.io
         uses: docker/build-push-action@v6
         with:
           context: .
           file: misc/docker/BackupDockerfile
           push: true
           tags: |
-            gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}-backup:${{ env.VERSION }}
-            gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}-backup:latest
-            gcr.io/${{ vars.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}-backup:${{ github.sha }}
+            ghcr.io/${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}-backup:${{ env.VERSION }}
+            ghcr.io/${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}-backup:latest
+            ghcr.io/${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}-backup:${{ github.sha }}
           labels: |
             maintainer=AnJia <anjia0532@gmail.com>
             org.opencontainers.image.description=从注册中心同步实例到网关的备份工具（支持多集群多 kubeconfig）
             org.opencontainers.image.title=discovery-syncer-python-backup
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=gcr-backup
-          cache-to: type=gha,mode=max,scope=gcr-backup
+          cache-from: type=gha,scope=ghcr-backup
+          cache-to: type=gha,mode=max,scope=ghcr-backup
 
       - name: Build and push backup to Docker Hub
         uses: docker/build-push-action@v6
@@ -241,9 +239,9 @@ jobs:
           file: misc/docker/BackupDockerfile
           push: true
           tags: |
-            ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}-backup:${{ env.VERSION }}
-            ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}-backup:latest
-            ${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}-backup:${{ github.sha }}
+            ${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}-backup:${{ env.VERSION }}
+            ${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}-backup:latest
+            ${{ env.REGISTRY_NS }}/${{ env.IMAGE_NAME }}-backup:${{ github.sha }}
           labels: |
             maintainer=AnJia <anjia0532@gmail.com>
             org.opencontainers.image.description=从注册中心同步实例到网关的备份工具（支持多集群多 kubeconfig）
