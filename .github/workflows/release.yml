@@ -116,10 +116,19 @@ jobs:
             echo "Tag $TAG 不存在，将在测试通过后创建"
           fi
 
-      - name: Generate CHANGELOG
-        if: env.TAG_EXISTS == 'false'
+      - name: Generate release notes (this version only)
         run: |
-          python scripts/gen_changelog.py --version "$VERSION"
+          # 总是生成**仅本版**正文（供 GitHub Release），避免 Release 页面累积历史版本。
+          # tag 不存在时同时把本版段落插入累积 CHANGELOG.md；
+          # tag 已存在（重跑）时 CHANGELOG.md 已含本版，用 --skip-changelog 不重复累积。
+          ARGS=(--version "$VERSION" --body-out .release-body.md)
+          if [ "$TAG_EXISTS" = "true" ]; then
+            ARGS+=(--skip-changelog)
+            echo "tag 已存在：仅刷新本版正文，不重复累积 CHANGELOG.md"
+          fi
+          python scripts/gen_changelog.py "${ARGS[@]}"
+          echo "--- 本版 Release 正文预览 ---"
+          cat .release-body.md
 
       - name: Commit CHANGELOG (skip if unchanged)
         if: env.TAG_EXISTS == 'false'
@@ -147,7 +156,8 @@ jobs:
           tag_name: ${{ env.TAG }}
           # 用归一化后的 TAG，避免用户输入 v3.0.0 时标题变成 "vv3.0.0"
           name: ${{ env.TAG }}
-          body_path: CHANGELOG.md
+          # 正文用「仅本版」段落，不累积历史版本（CHANGELOG.md 才是完整历史）
+          body_path: .release-body.md
           generate_release_notes: false
           # Release 已存在时允许更新（配合 tag 的幂等逻辑，使发版可重跑）
           allowUpdates: true
