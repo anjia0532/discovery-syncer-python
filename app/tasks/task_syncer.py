@@ -49,6 +49,12 @@ logger = for_task(__name__)
 # 不能复用 fetch-interval（旧配置常为 10s），否则等于又变回高频全量轮询。
 DEFAULT_RECONCILE_INTERVAL = "@every 5m"
 
+# 订阅续约/新服务发现的默认周期：与 5m 全量对账对齐。
+# 旧实现复用 fetch-interval（生产常见 1~10s），导致每 1~2s 拉一次全量服务列表，
+# 日志刷屏且对上游持续施压。UDP 订阅发现新服务晚几分钟没有实际损失：
+# 对账本身就会同步新服务，事件驱动只是稍后生效。
+DEFAULT_REFRESH_INTERVAL = "@every 5m"
+
 _manager: Optional[SubscriptionManager] = None
 _clients_lock = threading.Lock()
 _reloading = False
@@ -390,10 +396,16 @@ def _build_spec(target, discovery_client, gateway_client) -> Optional[TargetSpec
 
         grpc_probe = lambda h, p: probe_tcp(h, p, 1.0)  # noqa: E731
 
-    refresh_expr = sub.refresh_interval or target.fetch_interval
-    refresh_sec = _interval_seconds(refresh_expr, 30.0)
+    # 续约/发现周期：显式配置优先；留空时**不再复用 fetch-interval**
+    # （旧配置常见 1~10s，会让 UDP 订阅循环每 2 秒拉一次全量服务列表，
+    # 日志刷屏且对上游施压），默认对齐 5m 全量对账。下限保护 5s：
+    # 续约是幂等 GET，无副作用，但过短没有意义。
+    refresh_expr = sub.refresh_interval or DEFAULT_REFRESH_INTERVAL
+    refresh_sec = max(5.0, _interval_seconds(refresh_expr, 300.0))
     poll_sec = _interval_seconds(target.fetch_interval, 10.0)
-    push_timeout = float(sub.push_timeout_sec) or refresh_sec * 3
+    # push_timeout 与 refresh 解耦：refresh 改 5m 后若继续用 refresh_sec*3，
+    # 失联判定会拖到 15m。推送是否活着应独立、尽快地被判定（见 health()）。
+    push_timeout = float(sub.push_timeout_sec) or 120.0
 
     cfg = target.config or {}
     list_services = (lambda: discovery_client.get_all_service(cfg)) if discovery_client else (lambda: [])

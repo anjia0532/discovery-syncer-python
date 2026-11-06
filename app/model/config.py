@@ -54,9 +54,12 @@ class SubscriptionConfig(BaseModel):
         version: 显式声明上游大版本（``1``/``2``/``3`` 或完整版本号），留空自动探测。
         udp_host / udp_port: Nacos 1.x UDP 监听地址；port=0 随机端口。
         debounce_ms: 同服务事件合并窗口。
-        refresh_interval: UDP 订阅续约 / 新服务发现周期，留空复用 ``fetch-interval``。
-        reconcile_interval: 兜底全量对账周期，留空复用 ``fetch-interval``。
-        push_timeout_sec: 超过该秒数未收到真实推送即降级（0 表示不判定）。
+        refresh_interval: UDP 订阅续约 / 新服务发现周期，留空默认 ``@every 5m``
+            （v3.0.2 起不再复用 ``fetch-interval``，避免高频拉全量服务列表）。
+        reconcile_interval: 兜底全量对账周期，留空默认 ``@every 5m``
+            （复用 fetch-interval 等于退回高频轮询，故不复用）。
+        push_timeout_sec: 超过该秒数未收到真实推送即判定失联并降级
+            （0 表示使用内置默认 120s；-1/极大值可视为不判定）。
         reconcile: 是否保留低频全量对账兜底。
         webhook: 是否附带入站 webhook receiver。
         fallback: 推送不可用时是否自动叠加快照 diff 增量轮询。

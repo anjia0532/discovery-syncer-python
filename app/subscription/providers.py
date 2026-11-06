@@ -166,6 +166,10 @@ class NacosUdpSubscription(SubscriptionProvider):
         self._subscribed: set = set()
         self._recv_thread: Optional[threading.Thread] = None
         self._refresh_thread: Optional[threading.Thread] = None
+        # 推送失联判定的启动基准（见 start()）：刚启动尚无真实推送
+        # （last_push_at=None）时从此刻计时，避免 supervisor 在首轮变更
+        # 到来之前就把健康的 UDP 通道误判降级、叠加高频 poll。
+        self._started_at = 0.0
 
     @property
     def bound_port(self) -> int:
@@ -190,6 +194,8 @@ class NacosUdpSubscription(SubscriptionProvider):
 
         self._health.alive = True
         self._health.reason = f"listening udp://{self._udp_host}:{self._udp_port}"
+        # 失联判定的启动基准：从真正开始监听计时（而非对象构造时）。
+        self._started_at = self._clock()
         self._recv_thread = threading.Thread(target=self._recv_loop, name=f"nacos-udp-{self.target_id}", daemon=True)
         self._refresh_thread = threading.Thread(
             target=self._refresh_loop, name=f"nacos-refresh-{self.target_id}", daemon=True
@@ -235,10 +241,15 @@ class NacosUdpSubscription(SubscriptionProvider):
             self.refresh_subscriptions()
 
     def refresh_subscriptions(self) -> int:
-        """重发订阅（续约）并对新发现的服务产出事件，返回新增订阅数。
+        """重发全部服务的订阅（真实续约）并对新发现的服务产出事件，返回新增订阅数。
+
+        每一轮都对**所有**服务重发登记（含已订阅的）：Nacos 服务端 PushService
+        会因僵尸判定（长时间无推送活动）或节点重启清掉订阅记录，旧实现只对
+        新服务发订阅、已订阅直接 skip，订阅一旦被清就**永久静默中断**，
+        只能靠对账兜底。重发是幂等的 GET，无副作用。
 
         Returns:
-            本次新订阅的服务数量。
+            本次**新发现**（首轮之前未订阅过）的服务数量。
         """
         try:
             services = self._list_services() or []
@@ -263,12 +274,14 @@ class NacosUdpSubscription(SubscriptionProvider):
             namespace = str(ext.get("namespaceId") or "")
             key = (namespace, group, name)
             current.add(key)
-            if key in self._subscribed:
-                continue
+            is_new = key not in self._subscribed
             try:
+                # 无论新旧都重发：这是「续约」，不只是「发现」。
                 self._send_subscribe(name, group, namespace, self._udp_port)
             except Exception as exc:  # noqa: BLE001
                 self.log.warning("Nacos 订阅失败 service=%s err=%s", name, exc)
+                continue
+            if not is_new:
                 continue
             self._subscribed.add(key)
             added += 1
@@ -278,20 +291,30 @@ class NacosUdpSubscription(SubscriptionProvider):
             ))
         self._subscribed.intersection_update(current)
         self.heartbeat()
-
-        if self._push_timeout > 0:
-            last = self._health.last_push_at
-            if last is None or (self._clock() - last) > self._push_timeout:
-                self._health.degraded = True
-                self._health.reason = (
-                    f"超过 {self._push_timeout:.0f}s 未收到 UDP 推送（可能被 NAT/防火墙阻断），需降级"
-                )
         return added
 
     def health(self):
+        """动态计算推送失联状态，不依赖 refresh 周期。
+
+        supervisor 每 5s 调用本方法判定是否叠加降级兜底；若失联判定只在
+        refresh_subscriptions() 里算（refresh 默认 5m），降级检测会滞后一个
+        refresh 周期。这里改为按 ``last_push_at`` 实时判定：超时未收到真实
+        推送即标记 degraded；真实推送恢复后 ``last_push_at`` 更新，超时自然
+        不再成立，无需额外清除逻辑。（socket 异常等置的 degraded 不受影响。）
+        """
         snapshot = super().health()
-        snapshot.reason = self._health.reason
-        snapshot.degraded = self._health.degraded
+        # 仅 start() 之后才判定失联（_started_at>0）；未启动或纯逻辑调用不误判。
+        # degraded 只在这份快照副本上按实时结果计算，不回写存储状态：
+        #   - 超时 → 快照标记 degraded（触发 supervisor 叠加 poll 兜底）
+        #   - 未超时 → 沿用存储的 degraded（仅由 socket 异常/列表拉取失败置位），
+        #     真实推送恢复后 last_push_at 更新，超时自然不再成立。
+        if self._push_timeout > 0 and self._started_at > 0:
+            last = snapshot.last_push_at or self._started_at
+            if (self._clock() - last) > self._push_timeout:
+                snapshot.degraded = True
+                snapshot.reason = (
+                    f"超过 {self._push_timeout:.0f}s 未收到 UDP 推送（可能被 NAT/防火墙阻断），需降级"
+                )
         return snapshot
 
 

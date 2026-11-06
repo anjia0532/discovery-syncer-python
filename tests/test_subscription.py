@@ -113,7 +113,10 @@ def test_webhook_notify(sub_providers):
     assert events[0].source == "webhook"
 
 
-def test_udp_refresh_subscribes_new_services_only(sub_providers):
+def test_udp_refresh_resubscribes_all_services(sub_providers):
+    """v3.0.2：每轮 refresh 都对**所有**服务重发订阅（真实续约），
+    返回值只统计**新发现**的服务数。旧实现对新服务之外的直接 skip，
+    订阅被服务端清理后永不再登记，属静默中断隐患。"""
     events, calls = [], []
     services = [_svc("svc-a", [_ins("1.1.1.1", 80)]), _svc("svc-b", [_ins("2.2.2.2", 80)])]
     provider = sub_providers.NacosUdpSubscription(
@@ -123,11 +126,80 @@ def test_udp_refresh_subscribes_new_services_only(sub_providers):
         refresh_interval_sec=30,
     )
     provider._udp_port = 19999
+
+    # 第一轮：发现 2 个新服务，各发一次订阅
     assert provider.refresh_subscriptions() == 2
     assert len(calls) == 2 and all(c[3] == 19999 for c in calls)
-    assert provider.refresh_subscriptions() == 0   # 已订阅的服务不重复发
-    assert provider.health().alive is True
     assert {e.service_name for e in events} == {"svc-a", "svc-b"}
+
+    # 第二轮：added=0（无新服务），但**续约仍重发**——这是本次修复的核心
+    assert provider.refresh_subscriptions() == 0
+    assert len(calls) == 4, f"已订阅服务应被重新登记（续约），实际 calls={len(calls)}"
+    # 续约不应产出新事件（否则对账/事件会被重复触发）
+    assert {e.service_name for e in events} == {"svc-a", "svc-b"}
+    assert len(events) == 2, "续约不应重复产出事件"
+    assert provider.health().alive is True
+
+
+def test_udp_push_timeout_marks_degraded_without_refresh(sub_providers):
+    """失联判定应在 health() 实时计算，而非只在 refresh 里算。
+
+    回归点：refresh 默认周期改为 5m 后，若失联判定仍绑在 refresh 上，
+    降级检测会滞后一个 refresh 周期（最坏 5m），supervisor 每 5s 巡检
+    看到的 degraded 会长期为假阴性。
+    """
+    clock = {"t": 1000.0}
+    services = [_svc("svc-a", [_ins("1.1.1.1", 80)])]
+    provider = sub_providers.NacosUdpSubscription(
+        target_id="t1", discovery="nacos1", emit=lambda ev: None,
+        list_services=lambda: services,
+        send_subscribe=lambda *a: None,
+        push_timeout_sec=60,
+        clock=lambda: clock["t"],
+    )
+    # 模拟已启动（start() 会设 _started_at），但未收到任何真实推送
+    provider._started_at = clock["t"]
+    provider._health.alive = True
+
+    assert provider.health().degraded is False, "刚启动在 push_timeout 内不应判降级"
+
+    # 时间推进超过 push_timeout，未收到推送 -> 实时判降级
+    clock["t"] += 61
+    assert provider.health().degraded is True
+    assert "未收到 UDP 推送" in provider.health().reason
+
+    # 收到真实推送后，降级标记自动清除
+    provider._record_push(sub_providers.ChangeEvent(service_name="svc-a", discovery="nacos1"))
+    assert provider.health().degraded is False
+
+
+def test_udp_startup_grace_before_first_push(sub_providers):
+    """last_push_at=None 时以 _started_at 计时，避免刚启动就被误判失联。"""
+    clock = {"t": 5000.0}
+    provider = sub_providers.NacosUdpSubscription(
+        target_id="t1", discovery="nacos1", emit=lambda ev: None,
+        list_services=lambda: [], send_subscribe=lambda *a: None,
+        push_timeout_sec=120, clock=lambda: clock["t"],
+    )
+    provider._started_at = clock["t"]
+    # 启动后 100s，仍在 120s 宽限内且无任何推送
+    clock["t"] += 100
+    assert provider.health().degraded is False
+    # 超过 120s 仍无真实推送 -> 判失联
+    clock["t"] += 30
+    assert provider.health().degraded is True
+
+
+def test_udp_health_before_start_is_not_degraded(sub_providers):
+    """未 start()（_started_at=0）时不做失联判定，避免纯逻辑构造被误判。"""
+    clock = {"t": 90000.0}
+    provider = sub_providers.NacosUdpSubscription(
+        target_id="t1", discovery="nacos1", emit=lambda ev: None,
+        list_services=lambda: [], send_subscribe=lambda *a: None,
+        push_timeout_sec=120, clock=lambda: clock["t"],
+    )
+    assert provider._started_at == 0.0
+    assert provider.health().degraded is False, "未启动不应判失联"
 
 
 def test_manager_auto_fallback_on_degraded_push(sub_manager, sub_core):
