@@ -87,6 +87,23 @@ ignore_uris = ["plugins/list"]
 
 alias_uris = {"ssl": "ssls", "proto": "protos", "ssls": "ssl", "protos": "proto"}
 
+# ssl/proto 这两组资源在 APISIX 2.x 是单数（/apisix/admin/ssl、/proto），
+# 3.x 是复数（/apisix/admin/ssls、/protos）。迁移时目标资源名必须按【目标】网关版本决定，
+# 不能像旧版那样无条件互换：v3 -> v3 会把 ssls 写成 /ssl，被 APISIX 拒绝
+# （404 Unsupported resource type: ssl），且错误被 apisix_execute 吞成空列表，
+# 表现为「迁移成功但证书全丢」。
+_ssl_uris = {"ssl", "ssls"}
+_proto_uris = {"proto", "protos"}
+
+
+def resolve_migrate_uri(uri: str, target_version: str) -> str:
+    """按【目标】网关版本返回写入用的资源名，其余资源原样返回。"""
+    if uri in _ssl_uris:
+        return "ssls" if target_version == APISIX_V3 else "ssl"
+    if uri in _proto_uris:
+        return "protos" if target_version == APISIX_V3 else "proto"
+    return uri
+
 has_upstream = ["/apisix/routes/", "/apisix/stream_routes/", "/apisix/services/", "/apisix/upstreams/"]
 
 
@@ -256,30 +273,70 @@ class Apisix(Gateway):
     async def migrate_to(self, target_gateway: Gateway):
         assert isinstance(target_gateway, Apisix), "目前仅支持apisix网关之间的迁移"
 
-        for uri, item in apisix_uri_dict.items():
+        # 资源名（ssl/ssls、proto/protos）取决于【目标】网关版本，不能用源版本或无条件互换
+        target_version = target_gateway.VERSION
+        # 按 order 升序：先 ssl/global_rules/plugin_* 等，再 consumers/services/upstreams，
+        # 最后 routes，保证路由创建时其引用的 upstream/service 已存在
+        ordered = sorted(apisix_uri_dict.items(), key=lambda kv: kv[1].get("order", 0))
+
+        failures: List[str] = []
+        migrated = 0
+
+        for uri, item in ordered:
             if ignore_uris.__contains__(uri) or self.VERSION not in item.get("version"):
                 continue
             resp = self.apisix_execute("GET", uri, {}, None)
             if not resp.get("list"):
                 continue
 
-            alias_uri = alias_uris.get(uri, uri)
-            threads = []
+            target_uri = resolve_migrate_uri(uri, target_version)
+            payloads = []
             for val in resp.get("list"):
                 item_val = val.get("value", val)
-                item_id = item_val.get("id")
+                item_id = item_val.get("id", val.get("id"))
+                if item_id is None:
+                    logger.warning(f"迁移 {uri} 时跳过缺少 id 的记录: {item_val}")
+                    continue
                 item_val.pop("create_time", None)
                 item_val.pop("update_time", None)
-                if "ssl" in alias_uri:
+                if target_uri in _ssl_uris:
                     item_val.pop("validity_start", None)
                     item_val.pop("validity_end", None)
-                item_val = self.translate(target_gateway.VERSION, item_val)
-                t = Thread(target=target_gateway.apisix_execute,
-                           args=("PUT", alias_uri + "/" + item_id, {}, json.dumps(item_val)))
+                payloads.append((item_id, self.translate(target_version, item_val)))
+
+            if not payloads:
+                continue
+
+            results = []
+
+            def _put(_uri=target_uri, _id=None, _val=None):
+                status, body = target_gateway.put_raw(f"{_uri}/{_id}", _val)
+                results.append((_id, status, body))
+
+            threads = []
+            for item_id, item_val in payloads:
+                t = Thread(target=_put, kwargs={"_id": item_id, "_val": item_val})
                 t.start()
                 threads.append(t)
             for t in threads:
                 t.join()
+
+            ok_this = 0
+            for _id, status, body in results:
+                if status >= 400:
+                    failures.append(f"{target_uri}/{_id} -> HTTP {status}: {body[:200]}")
+                else:
+                    ok_this += 1
+            migrated += ok_this
+            logger.info(f"迁移 {uri} -> {target_uri}: 成功 {ok_this}/{len(payloads)}")
+
+        if failures:
+            # 交给 handler 转成 500 + 错误详情，避免「返回 OK 但数据没进去」
+            raise RuntimeError(
+                f"网关数据迁移存在失败记录，成功 {migrated} 条、失败 {len(failures)} 条: "
+                + "; ".join(failures[:10])
+            )
+        logger.info(f"网关数据迁移完成，共同步 {migrated} 条")
 
     def translate(self, target_version: str, data: dict) -> dict:
         if self.VERSION == target_version: return data
@@ -313,6 +370,18 @@ class Apisix(Gateway):
             logger.error(e)
             raise e
         return data
+
+    def put_raw(self, uri: str, data: dict):
+        """PUT 并返回 (status_code, body)，供迁移等必须感知失败的场景使用。
+
+        与 :meth:`apisix_execute` 的区别：这里**不**把 ``error_msg`` 归一化成空列表，
+        调用方可据状态码判断真实结果（旧实现正因吞掉 404 才导致 SSL 静默丢失）。
+        """
+        resp = self._http.request(
+            "PUT", f"{self._config.admin_url}{self._config.prefix}{uri}",
+            params={}, data=json.dumps(data),
+        )
+        return resp.status_code, resp.text
 
     def apisix_execute(self, method, uri, params, data=None):
         # 复用连接池：事件驱动同步每次 diff 都会打网关 Admin API，

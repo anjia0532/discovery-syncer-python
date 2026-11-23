@@ -9,7 +9,7 @@ gateway等网关插件的高扩展性
 ### 通过docker运行
 
 ```bash
-docker run anjia0532/discovery-syncer-python:v3.0.2
+docker run anjia0532/discovery-syncer-python:v3.0.3
 ```
 
 特别的，`-c ` 支持配置远端http[s]的地址，比如读取静态资源的，比如读取nacos的
@@ -148,6 +148,21 @@ origin_gateway_name 是源网关的名字，target_gateway_name 是目标网关�
 
 精力有限，目前仅实现了 apisix 实例间数据迁移 （支持 apisix 2x->3x , apisix 3x->2x，apisix 2x->2x，apisix 3x->3x），kong
 的未实现，有需要的，欢迎提PR贡献代码或者提issues 来反馈
+
+**迁移行为（v3.0.3 起）**
+
+- 资源名按**目标**网关版本取名：`ssl`/`proto` 在 apisix 2.x 是单数
+  （`/apisix/admin/ssl`、`/proto`），3.x 是复数（`/apisix/admin/ssls`、`/protos`）。
+  v3.0.2 及以前用一张固定的 `alias_uris` 表无条件互换，**3.x -> 3.x 时会写成 `/ssl`**，
+  被 apisix 拒绝（`404 Unsupported resource type: ssl`），且错误被吞成空列表，
+  表现为「接口返回 OK 但 SSL 证书一条都没迁过去」。
+- 写入按 `order` 升序（证书/global_rules → consumers/services/upstreams → routes），
+  保证路由创建时其引用的 upstream/service 已存在。
+- 逐条检查写入结果，**失败会汇总后抛错**，接口返回 `500` 并带上失败明细
+  （形如 `ssls/-xxx -> HTTP 404: ...`），不再静默成功；可用同一接口重跑补齐。
+
+**注意**：迁移按资源 `id` 覆盖写入。若源与目标存在相同 `id` 但内容不同（例如同名
+SSL 证书绑定了不同域名），PUT 会覆盖目标侧数据，迁移前请先确认目标侧是否已有同名资源。
 
 #### `PUT /restore/{gateway-name}` 将 db-less 文件还原到网关
 

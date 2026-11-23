@@ -241,3 +241,23 @@ def runtime_taskbus(stub_environment, task_context):
 def runtime_scheduler(stub_environment):
     # APScheduler 在 LocalScheduler.start() 内延迟导入，加载模块本身无需安装。
     return load_module("app.runtime.scheduler", "app/runtime/scheduler.py", package="app.runtime")
+
+
+@pytest.fixture(scope="session")
+def apisix_gateway(stub_environment):
+    """加载 apisix 网关实现（需 app.service.repr_str 与 gateway 基类）。"""
+    import app.service as svc_pkg
+
+    if not hasattr(svc_pkg, "repr_str"):
+        def repr_str(dumper, data):
+            if "\n" in data:
+                return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+            return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+        svc_pkg.repr_str = repr_str
+
+    ensure_pkg("app.service.gateway", ROOT / "app/service/gateway")
+    load_module("app.service.gateway.gateway", "app/service/gateway/gateway.py",
+                package="app.service.gateway")
+    return load_module("app.service.gateway.apisix", "app/service/gateway/apisix.py",
+                       package="app.service.gateway")
