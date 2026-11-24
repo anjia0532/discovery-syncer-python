@@ -21,8 +21,10 @@ on:
         description: 'Release version — 支持 3.0.0 或 v3.0.0（v 前缀可选，会自动归一化）'
         required: true
         type: string
+      # 注意：本开关只控制 test job 里的「Docker multi-version matrix」那一步。
+      # 单元测试与冒烟测试（tests/integration/app_smoke.py）不受影响，始终执行。
       skip_matrix:
-        description: 'Skip Docker multi-version matrix (faster, unit + smoke only)'
+        description: '跳过 Docker 多版本矩阵（更快；单测 + 冒烟测试仍会执行）'
         required: false
         type: boolean
         default: false
@@ -45,7 +47,7 @@ env:
 
 jobs:
   test:
-    name: Test (unit + smoke + matrix)
+    name: Test (unit + smoke; Docker matrix optional)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
