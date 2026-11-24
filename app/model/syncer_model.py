@@ -76,22 +76,32 @@ class DiscoveryInstance(Base):
     def __setitem__(self, k, v):
         self.k = v
 
-    def check_timeout(self,last_time):
-        if self.last_time is None:
-            return False
-        self.last_time = self.last_time.split('.')[0]
-        # 尝试不同的日期时间格式
-        formats = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"]
-        for fmt in formats:
-            try:
-                last_time_dt = datetime.strptime(last_time, fmt)
-                break
-            except ValueError:
-                continue
-        else:
-            return False
+    def check_timeout(self, last_time=None):
+        """判断实例是否已超过 10 分钟仍未恢复。
 
-        return datetime.now() - last_time_dt > timedelta(minutes=10)
+        ``last_time`` 的形态取决于来源：ORM 读出的是 ``datetime``，而 ``text()`` 原生行
+        给的是 ``str``（sqlite 不强制类型）。旧实现只按 str 处理（``self.last_time.split``），
+        ORM 路径必然抛 ``AttributeError: 'datetime' object has no attribute 'split'``，
+        于是「10 分钟后删除未恢复实例」的兜底成了死代码，还每轮刷一条 WARNING。
+        """
+        if last_time is None:
+            last_time = self.last_time
+        if last_time is None:
+            return False
+        if isinstance(last_time, str):
+            # 兼容 "2026-11-24 16:20:00.123456" / "2026-11-24T16:20:00.123456"
+            text = last_time.split('.')[0]
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    last_time = datetime.strptime(text, fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                return False
+        if not isinstance(last_time, datetime):
+            return False
+        return datetime.now() - last_time > timedelta(minutes=10)
 
 
     def to_dict(self):
@@ -156,8 +166,12 @@ class DiscoveryInstance(Base):
             instances = self.get_target_service_all_instance(0, sqla_helper)
             context = current_task()
             msg_time = context.submit_time if context else None
+            # 这里的 instances 来自 ORM，to_dict_item() 含 datetime；json.dumps 必须带
+            # default=str，否则每次探测失败都会抛 TypeError（被上层吞成「健康检查报错」）。
             logger.warning(
-                f"健康检查 {self.target_id} {self.service} {schema}{self.instance}{healthcheck.get('uri')} ,msg_time: {msg_time}, 实例状态: {json.dumps([d.to_dict_item() for d in instances])}")
+                "健康检查 %s %s %s%s ,msg_time: %s, 实例状态: %s", self.target_id, self.service,
+                schema, self.instance, msg_time,
+                json.dumps([d.to_dict_item() for d in instances], ensure_ascii=False, default=str))
         if params['status'] != self.status and healthcheck.get("alert", {}).get("url"):
             instances = self.get_target_service_all_instance(0, sqla_helper)
             keyfunc = lambda item: item['status']
@@ -178,10 +192,12 @@ class DiscoveryInstance(Base):
             body['new_status'] = params['status']
             body['items'] = group_dict
             try:
+                payload = json.dumps(body, ensure_ascii=False, default=str)
                 resp = httpx.request(method=healthcheck.get("alert", {}).get("method", "GET").upper(), timeout=10,
-                                     url=healthcheck.get("alert", {}).get("url"), params={"body": json.dumps(body)})
+                                     url=healthcheck.get("alert", {}).get("url"), params={"body": payload})
                 logger.info(
-                    f"健康检查状态变更通知 参数为: {json.dumps(body)} {healthcheck.get('alert', {})} 结果为: {resp.text}, status_code: {resp.status_code}, headers: {resp.headers}")
+                    "健康检查状态变更通知 参数为: %s %s 结果为: %s, status_code: %s, headers: %s",
+                    payload, healthcheck.get('alert', {}), resp.text, resp.status_code, resp.headers)
             except Exception as e:
                 logger.error(f"健康检查状态变更通知 {healthcheck.get('alert', {})} 报错 {e.args}")
 
@@ -203,12 +219,20 @@ class DiscoveryInstance(Base):
                                 d.instance in dis_ins and d.status == "unhealthy" and d.last_time and datetime.now().timestamp() - d.last_time.timestamp() >= 60]
 
             if save_instances:
-                logger.info(f"新增的实例: {json.dumps([d.to_dict_item() for d in save_instances])}")
+                # to_dict_item() 里带 create_time(datetime)，json.dumps 不加 default=str 会抛
+                # TypeError；而这行在 add_all/commit 之前，一旦抛错实例就永远入不了库
+                # （曾导致主动健康检查与「不健康实例自动下线」整体失效，线上每 5 分钟刷一条
+                #  WARNING 且无堆栈，长期无人察觉）。
+                logger.info("新增的实例: %s",
+                            json.dumps([d.to_dict_item() for d in save_instances],
+                                       ensure_ascii=False, default=str))
                 ss.add_all(save_instances)
                 ss.commit()
             # 更新已有实例
             if update_instances:
-                logger.info(f"更新的实例: {json.dumps([d.to_dict_item() for d in update_instances])}")
+                logger.info("更新的实例: %s",
+                            json.dumps([d.to_dict_item() for d in update_instances],
+                                       ensure_ascii=False, default=str))
                 for d in update_instances:
                     self.set_counts({'id': d.id, "successes": 0, "failures": 0, "timeouts": 0, "status": "unknown",
                                      "last_time": datetime.now()}, sqla_helper)

@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.4] - 2026-11-24
+
+### Bug Fixes
+
+* **主动健康检查与「不健康实例自动下线」长期失效**（线上每 5 分钟一条
+  `健康检查下线实例失败, %s , %s` 的根因）：`DiscoveryInstance.save_or_update()`
+  在 `ss.add_all()/ss.commit()` **之前**就对新建实例做 `json.dumps`，而
+  `to_dict_item()` 里的 `create_time` 是 `datetime`，抛
+  `TypeError: Object of type datetime is not JSON serializable`。异常被
+  `_apply_healthcheck` 的 try/except 吞掉 → `instances` 表恒为空 → 健康检查 cron
+  每轮取不到行直接 return → 自动下线从未执行。现改为
+  `json.dumps(..., ensure_ascii=False, default=str)`，写库不再被日志调用阻断。
+* **ES 日志丢失 `%s` 参数与堆栈**：`ElasticHandler` 原来写的是 `str(record.msg)`
+  （模板原文），参数全丢且完全不采集 `exc_info`；改用 `record.getMessage()`，
+  并在有异常时写入 `stack_trace` 字段（沿用日志平台既有字段名，可直接检索）。
+* **钉钉日志同样不渲染参数，且会污染共享 `record`**：`DingTalkHandler.__emit()`
+  改用 `record.getMessage()`，并改为构造局部 `fields` 而非就地改写
+  `record.msg` / `record.pathname`（原写法会影响同一 record 上后续 handler 的输出）。
+* `_apply_healthcheck` 的失败日志补齐 `作业 / service / err` 上下文并输出完整堆栈
+  （原来是 `%s` 占位符 + `exc_info=异常对象`，线上完全无法定位）。
+* **写库修好后暴露的两个「以前表空所以没跑过」的时序/类型缺陷**：
+  1. `_apply_healthcheck` 先调 `save_or_update`（会把「unhealthy 且 last_time 超过 60s」
+     的行重置成 `unknown` 并清零计数）再读 unhealthy —— 同步间隔 >60s（例如
+     `fetch-interval` 设为 1m/5m）时待下线的行会被提前清掉，自动下线**仍然不会触发**。
+     改为**先读 unhealthy、再写库**。
+  2. `DiscoveryInstance.check_timeout()` 假定 `last_time` 是 `str`（`.split('.')`），
+     但 ORM 读出的是 `datetime` → 抛 `AttributeError: 'datetime' object has no
+     attribute 'split'`，被上层吞成「健康检查报错」，导致「10 分钟后删除未恢复实例」
+     的兜底成为死代码，且每个 unhealthy 实例每轮刷一条 WARNING。现同时兼容两种类型。
+* **同类 `json.dumps(datetime)` 一并修掉**：健康检查失败时的「实例状态」日志、
+  以及状态变更告警通知（`healthcheck.alert.url`）的 payload —— 后者修复前必然抛
+  TypeError 被吞，等于**告警永远发不出去**。
+
+### Tests
+
+* 新增 `tests/test_healthcheck_regression.py`：覆盖 `save_or_update` 落库与幂等、
+  `unhealthy` 标记与删除、`_apply_healthcheck` 下线与 `min-hosts` 保护、
+  ES/钉钉 handler 的消息渲染与 `stack_trace`、`check_timeout` 的 str/datetime 兼容、
+  以及「unhealthy 行 last_time 早于 60s 仍必须下线」的时序回归。
+  回退本次修复代码后该文件 12 个用例中 11 个失败（剩下 1 个是纯保护性断言）。
+
 ## [3.0.3] - 2026-11-23
 
 ### Bug Fixes

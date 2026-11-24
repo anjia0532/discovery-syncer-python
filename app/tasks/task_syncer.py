@@ -225,11 +225,14 @@ def _apply_healthcheck(target: dict, service_name: str, instances: List[Any]) ->
     sqla_helper = db.get_sqla_helper()[1]
     discovery_client = get_discovery_client(target.get("discovery"))
     try:
-        DiscoveryInstance({"target_id": target.get('id'), "service": service_name}).save_or_update(
-            instances, sqla_helper)
+        # 必须先读 unhealthy、再 save_or_update：后者会把「unhealthy 且 last_time 超过 60s」
+        # 的行重置成 unknown 并清零计数（给实例第二次机会）。若先写库，待下线的行会被提前
+        # 清掉 —— 只要同步间隔 > 60s（例如 fetch-interval 调成 1m/5m），自动下线就永远不触发。
         tracked = DiscoveryInstance(
             {"target_id": target.get('id'), "service": service_name}).get_target_service_all_instance(
             healthcheck.get("min-hosts", 1), sqla_helper)
+        DiscoveryInstance({"target_id": target.get('id'), "service": service_name}).save_or_update(
+            instances, sqla_helper)
         unhealthy = [d for d in tracked if d.status == "unhealthy"]
         if not unhealthy:
             return instances
@@ -244,7 +247,10 @@ def _apply_healthcheck(target: dict, service_name: str, instances: List[Any]) ->
             discovery_client.modify_registration(registration, down_instances)
         DiscoveryInstance({}).delete_by_instances(unhealthy_keys, sqla_helper)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("健康检查下线实例失败, %s , %s", target.get('id'), service_name, exc_info=exc)
+        # 带上作业/服务上下文并输出完整堆栈；此前只传 exc_info=异常对象且占位符未渲染，
+        # 线上只能看到「健康检查下线实例失败, %s , %s」，无法定位。
+        logger.warning("健康检查下线实例失败, 作业: %s, service: %s, err: %s",
+                       target.get('id'), service_name, exc, exc_info=True)
     return instances
 
 

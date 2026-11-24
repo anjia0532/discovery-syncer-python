@@ -5,6 +5,7 @@ import os
 import socket
 import sys
 import time
+import traceback
 from collections import OrderedDict
 # noinspection PyUnresolvedReferences
 from logging.handlers import WatchedFileHandler
@@ -131,9 +132,11 @@ class DingTalkHandler(logging.Handler):
 
     def __emit(self, record):
         try:
-            record.msg = record.msg.replace("\\", "\\\\").replace("\\\\n", "\\n").replace("\"", "'")
-            record.pathname = record.pathname.replace("\\", "\\\\").replace("\\\\n", "\\n").replace("\"", "'")
-            data = (DING_TALK_MSG_TEMPLATE or self._msg_template) % record.__dict__
+            # 用 getMessage() 取填充后的消息；且不再改写 record（改写会污染后续 handler 的输出）。
+            fields = dict(record.__dict__)
+            fields['msg'] = record.getMessage().replace("\\", "\\\\").replace("\\\\n", "\\n").replace("\"", "'")
+            fields['pathname'] = record.pathname.replace("\\", "\\\\").replace("\\\\n", "\\n").replace("\"", "'")
+            data = (DING_TALK_MSG_TEMPLATE or self._msg_template) % fields
             # 因为钉钉发送也是使用requests实现的，如果requests调用的urllib3命名空间也加上了钉钉日志，将会造成循环，程序卡住。一般情况是在根日志加了钉钉handler。
             self._remove_urllib_hanlder()
             resp = requests.post(self._ding_talk_url + self.sign(), json=json.loads(data), timeout=(5, 5))
@@ -282,9 +285,16 @@ class ElasticHandler(logging.Handler):
             log_info_dict['func_name'] = record.funcName
             log_info_dict['line_no'] = record.lineno
             log_info_dict['log_level'] = level_str
-            log_info_dict['msg'] = str(record.msg)
+            # 必须用 getMessage()：只有它会用 args 填充 %s 占位符；直接取 record.msg 拿到的是
+            # 模板原文（线上表现为「健康检查下线实例失败, %s , %s」这种无法排障的日志）。
+            log_info_dict['msg'] = record.getMessage()
             log_info_dict['script'] = self.script_name
-            log_info_dict['task_id'] = record.task_id
+            log_info_dict['task_id'] = getattr(record, "task_id", "-")
+            if record.exc_info:
+                # 字段名与 Java 侧对齐，日志平台可直接用 stack_trace:xxx 检索异常；
+                # 截断避免深栈把 ES 单文档/bulk 体积撑爆。
+                log_info_dict['stack_trace'] = ''.join(
+                    traceback.format_exception(*record.exc_info))[:8192]
             self.__add_task_to_bulk({
                 "_index": f'{self._index_prefix}{time.strftime("%Y.%m.%d")}',
                 "_source": log_info_dict
