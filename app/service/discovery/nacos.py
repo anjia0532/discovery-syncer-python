@@ -209,17 +209,44 @@ class Nacos(Discovery):
                     } | (instance.ext or {}) | (registration.ext_data or {})
             if cap.major >= 3 and not data.get("namespaceId"):
                 data["namespaceId"] = self.default_namespace
-            resp = self.nacos_execute("PUT", uri, data)
+            resp = self.nacos_execute("PUT", uri, data, raise_on_error=True)
             logger.info("修改 nacos 服务实例信息,url: %s, 请求参数: %s, 响应结果: %s",
                         self._url(uri), data, resp)
+            # Nacos OpenAPI 更新实例成功返回 true，失败返回 false（或 4xx，已由
+            # raise_on_error 拦下）。这里必须显式报错：调用方（_apply_healthcheck）
+            # 若把「下线没生效」当成成功去删跟踪行，下一轮又会把它当健康节点加回网关，
+            # 表现为 upstream 每轮增删一次、持续 flap。
+            if resp is False:
+                raise RuntimeError(
+                    "nacos 拒绝修改实例: %s:%s service=%s resp=%r"
+                    % (data.get("ip"), data.get("port"), registration.service_name, resp))
+            # 3.x 走 /nacos/v3/admin/，统一返回 Result 包装体（code/message/data），HTTP 仍是
+            # 200；此时 `resp is False` 永远不成立，必须检查 code / data 才不算「静默成功」。
+            if isinstance(resp, dict):
+                code = resp.get("code")
+                if code not in (None, 0, 200) or resp.get("data") is False:
+                    raise RuntimeError(
+                        "nacos 拒绝修改实例: %s:%s service=%s resp=%r"
+                        % (data.get("ip"), data.get("port"), registration.service_name, resp))
 
     # -- 底层请求 -----------------------------------------------------------
-    def nacos_execute(self, method="GET", uri=None, params=None, data=None):
-        """执行 Nacos HTTP OpenAPI 请求，URL 前缀按版本自动选择。"""
+    def nacos_execute(self, method="GET", uri=None, params=None, data=None, raise_on_error=False):
+        """执行 Nacos HTTP OpenAPI 请求，URL 前缀按版本自动选择。
+
+        Args:
+            raise_on_error: HTTP 状态码 >= 400 时抛 ``RuntimeError``。只读查询保持
+                旧行为（失败返回空/错误体、由上游决定），写操作（modify_registration）
+                需要显式失败信号。
+        """
         url = self._url(uri or "")
-        resp_txt = self._http.request(method, url, params=params, data=data).text
+        response = self._http.request(method, url, params=params, data=data)
+        resp_txt = response.text
         logger.info("请求 nacos 接口, method: %s, url: %s, 请求参数: %s, 请求数据: %s, 响应结果: %s",
                     method, url, params, data, resp_txt)
+        if raise_on_error and response.status_code >= 400:
+            raise RuntimeError(
+                "nacos %s %s 返回 HTTP %s: %s"
+                % (method, url, response.status_code, (resp_txt or "")[:300]))
         try:
             return json.loads(resp_txt)
         except (ValueError, TypeError):

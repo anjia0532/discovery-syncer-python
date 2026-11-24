@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.5] - 2026-11-24
+
+### Bug Fixes
+
+* **健康检查下线链路的一致性修复**（3.0.4 让写库路径首次真正跑起来后暴露的一批问题）：
+  1. `min-hosts` 语义修正：原实现用 SQL `LIMIT skip,-1` 跳过「排名最前的 N 行」，
+     保护的是**登记总数**而非**健康数** —— 健康实例不足时仍会继续摘除，可能把服务
+     摘到只剩 1 个可用节点。现改为「健康实例数 <= `min-hosts` 时不下线」，缺省值从
+     1 改为 0；健康数只统计当前注册中心快照里仍存在的实例；`min-hosts` 解析失败按 0
+     处理并告警（配置层的 `HealthCheck` 模型并未挂到 `Targets` 上，等于没有校验）。
+  2. `delete_by_instances` 增加 `target_id` / `service` 作用域：原来只按 `instance`
+     删除，同一个 `ip:port` 出现在其它 target/service 下会被连带删掉、
+     healthcheck 学习进度被清零。`PUT /discovery/{name}` 入口同步按 service 限定。
+  3. 下线失败不再删跟踪行，避免「下线没生效但跟踪行被删 → 下一轮又当健康节点加回
+     网关」的 upstream 来回增删（flap）。为此写路径全部显式校验：nacos 的 HTTP >= 400、
+     响应体 `false`、以及 3.x 的 `Result` 包装体（`code != 0` / `data=false`）；
+     eureka 的 `PUT .../status` 也校验状态码。
+  4. 不再用「unhealthy 超过 10 分钟就删跟踪行」做清理 —— 那会把「仍然存在、只是不健康
+     且下线失败」的行也删掉，同样导致 10 分钟周期的 flap。改由 `save_or_update()`
+     依据当前注册中心快照清理**已消失**的实例行。
+* **`instances` 表并发写安全**：新增 `(target_id, service, instance)` 唯一约束；
+  `save_or_update()` 对并发重复插入产生的 `IntegrityError` 回滚后忽略。原来
+  「先 SELECT 后 INSERT」在多线程下会插入重复行（重复健康检查、`min-hosts` 预算
+  被重复行吃掉）。
+* **`/-/reload` 不再抹掉健康学习状态**：`create_table_if_not_exists()` 原来对共享的
+  `Base.metadata` 做 `drop_all`，而它每次 `reload()` 都会被调用 —— 等于每次重载都把
+  全部跟踪状态清零（已摘除的死节点会被重新加回网关）。改为 `create_all` + 历史重复行
+  去重 + `CREATE UNIQUE INDEX IF NOT EXISTS`，老库也能补上唯一约束且数据不丢。
+* **sqlite 配置**：关闭 `echo`（写入路径每轮把每条 SQL 刷进日志）、
+  `connect_args={"timeout": 15}`、`journal_mode=WAL` + `synchronous=NORMAL`，
+  降低 TaskBus 工作线程与调度线程并发写的 `database is locked` 风险；
+  pragma 失败只告警不中断启动（只读挂载 / 网络盘场景）。
+* `DiscoveryInstance.__setitem__` 的 `self.k = v` 修正为 `setattr(self, k, v)`：
+  原实现任何 `obj['field'] = x` 都会静默写到名为 `k` 的属性上，等于不生效。
+* 钉钉 handler 的诊断输出改用 `record.getMessage()`（不再打印 `%s` 模板原文）。
+
+### Tests
+
+* `tests/test_healthcheck_regression.py` 增至 22 个用例，新增覆盖：作用域删除不误删
+  其它 target、`min-hosts` 按健康实例数判定、唯一约束与并发插入容错、
+  下线失败保留跟踪行、nacos（1.x/2.x `false` 与 3.x `Result`）/ eureka 写失败抛错、
+  reload 建表不丢数据、stale 行清理、`check_timeout` 类型兼容、
+  ES/钉钉日志渲染与 `stack_trace`。
+  全量 `pytest tests/`：91 passed。把本轮 7 个源码文件回退到 v3.0.4 后，
+  该文件 22 个用例失败 9 个（其余为 3.0.4 已有覆盖与保护性断言）。
+
 ## [3.0.4] - 2026-11-24
 
 ### Bug Fixes

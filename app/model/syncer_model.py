@@ -10,7 +10,8 @@ from db_libs.sqla_lib import SqlaReflectHelper
 from httpx import TimeoutException
 from pydantic import BaseModel, Field
 from pydantic import model_validator, AliasChoices
-from sqlalchemy import Column, Integer, String, Boolean, and_, delete, text
+from sqlalchemy import Column, Integer, String, Boolean, UniqueConstraint, and_, delete, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.sqlite import DATETIME
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -45,7 +46,14 @@ limit ifnull(:skip, 0),-1
 
 class DiscoveryInstance(Base):
     __tablename__ = 'instances'
-    __table_args__ = {'extend_existing': True}
+    # 同一 (target, service, instance) 只能有一行：_apply_healthcheck 会被调度线程和
+    # 任务总线线程并发调用，旧实现「先 SELECT 后 INSERT」在并发下会产生重复行
+    # （重复健康检查、min-hosts 预算被吃掉）。
+    __table_args__ = (
+        UniqueConstraint('target_id', 'service', 'instance',
+                         name='uq_instances_target_service_instance'),
+        {'extend_existing': True},
+    )
 
     id = Column(String, primary_key=True)
     target_id = Column(String)
@@ -74,7 +82,7 @@ class DiscoveryInstance(Base):
         return self.__dict__.get(field)
 
     def __setitem__(self, k, v):
-        self.k = v
+        setattr(self, k, v)
 
     def check_timeout(self, last_time=None):
         """判断实例是否已超过 10 分钟仍未恢复。
@@ -124,12 +132,13 @@ class DiscoveryInstance(Base):
         schema = ""
         try:
             if self.status == "unhealthy":
-                # 如果不健康了，不再进行健康检查，超过10分钟后删除实例
-                # 如果实例恢复了，会重新插入，进而重新进行健康检查
-                # 如果一直不恢复，或者已经下线了，提前删除也不影响
+                # 这里**不再删除**跟踪行：要不要清理取决于「实例是否还在注册中心」，
+                # 由 save_or_update() 依据当前快照统一清理（见其 stale 清理）。
+                # 若在这里按「超过 10 分钟」删，会把「仍然存在、只是不健康且下线失败」的行
+                # 删掉 —— 下一轮网关又把节点加回来，形成 10 分钟周期的 flap。
                 if self.check_timeout(self.last_time):
-                    logger.warning(f"实例 {self.target_id} {self.service} {self.instance} 超过10分钟仍未恢复，删除")
-                    self.delete_by_instances([self.instance], sqla_helper)
+                    logger.warning("实例 %s %s %s 超过10分钟仍未恢复（跟踪行保留，等待下线重试）",
+                                   self.target_id, self.service, self.instance)
                 return
             if HealthCheckType.HTTP.value == healthcheck.get("type"):
                 schema = "http://"
@@ -227,7 +236,14 @@ class DiscoveryInstance(Base):
                             json.dumps([d.to_dict_item() for d in save_instances],
                                        ensure_ascii=False, default=str))
                 ss.add_all(save_instances)
-                ss.commit()
+                try:
+                    ss.commit()
+                except IntegrityError:
+                    # 并发下另一个线程已插入同一 (target_id, service, instance)：
+                    # 唯一约束生效，本线程这条重复插入忽略即可，不是业务错误。
+                    ss.rollback()
+                    logger.info("并发重复插入已忽略, 作业: %s, service: %s",
+                                self.target_id, self.service)
             # 更新已有实例
             if update_instances:
                 logger.info("更新的实例: %s",
@@ -236,6 +252,21 @@ class DiscoveryInstance(Base):
                 for d in update_instances:
                     self.set_counts({'id': d.id, "successes": 0, "failures": 0, "timeouts": 0, "status": "unknown",
                                      "last_time": datetime.now()}, sqla_helper)
+            # 清理已从注册中心消失的跟踪行（实例退出 / 已被下线）。用查询时就取好的 db_ins
+            # 字符串快照：上面的 commit 会让 ORM 对象过期，此时再读 d.instance 可能抛
+            # DetachedInstanceError（测试已覆盖）。
+            # 为什么不靠「unhealthy 超过 10 分钟就删」：那会把「仍然存在、只是不健康且下线
+            # 失败」的行也删掉，下一轮网关又把节点加回来，形成 10 分钟周期的 flap。
+            stale = [name for name in db_ins if name not in dis_ins]
+            if stale:
+                logger.info("清理已消失实例的跟踪行: %s, 作业: %s, service: %s",
+                            json.dumps(stale, ensure_ascii=False, default=str),
+                            self.target_id, self.service)
+                ss.execute(delete(DiscoveryInstance).where(and_(
+                    DiscoveryInstance.target_id == self.target_id,
+                    DiscoveryInstance.service == self.service,
+                    DiscoveryInstance.instance.in_(stale))))
+                ss.commit()
             return instances
 
     def set_counts(self, params: {}, sqla_helper: SqlaReflectHelper):
@@ -244,11 +275,24 @@ class DiscoveryInstance(Base):
             ss.commit()
 
     def delete_by_instances(self, instances: [], sqla_helper: SqlaReflectHelper):
+        """删除跟踪行，作用域限定在 ``self.target_id`` / ``self.service``。
+
+        旧实现只按 ``instance`` 删除：同一个 ``ip:port`` 出现在别的 target/service 下时
+        会被一并删掉（多个 target 指向同一注册中心很常见），那一边的 healthcheck
+        学习进度被清零、状态中断。这里只在调用方给了 scope 时才加条件，
+        ``DiscoveryInstance({})`` 的不带 scope 调用保持旧语义。
+        """
         if len(instances) == 0:
             return
         with sqla_helper.session as ss:
-            logger.info(f"删除无效的实例: {json.dumps(instances)}")
+            logger.info("删除无效的实例: %s, 作业: %s, service: %s",
+                        json.dumps(instances, ensure_ascii=False, default=str),
+                        self.target_id, self.service)
             sql = delete(DiscoveryInstance).where(DiscoveryInstance.instance.in_(instances))
+            if self.target_id:
+                sql = sql.where(DiscoveryInstance.target_id == self.target_id)
+            if self.service:
+                sql = sql.where(DiscoveryInstance.service == self.service)
             ss.execute(sql)
             ss.commit()
 
@@ -260,8 +304,25 @@ class DiscoveryInstance(Base):
 
     @staticmethod
     def create_table_if_not_exists(sqla_helper: SqlaReflectHelper):
-        Base.metadata.drop_all(sqla_helper.engine)
+        """建表 + 幂等补唯一索引（**不再 drop**）。
+
+        旧实现在这里和 ``Jobs.create_table_if_not_exists`` 里对共享的 ``Base.metadata``
+        做 ``drop_all``，而 ``clear_client()`` 会在每次 ``/-/reload`` 调用 —— 等于每次
+        重载都把全部健康学习状态抹掉（已摘除的死节点会被重新加回网关）。
+
+        改为 create_all + 去重 + ``CREATE UNIQUE INDEX IF NOT EXISTS``：新库有表级约束，
+        历史库也能补上约束，且数据不丢。
+        """
         Base.metadata.create_all(sqla_helper.engine)
+        with sqla_helper.session as ss:
+            # 历史库可能有并发写入留下的重复行：先按 rowid 保留一条，再补唯一索引。
+            ss.execute(text(
+                "DELETE FROM instances WHERE rowid NOT IN ("
+                "SELECT MIN(rowid) FROM instances GROUP BY target_id, service, instance)"))
+            ss.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_instances_target_service_instance "
+                "ON instances(target_id, service, instance)"))
+            ss.commit()
 
     @staticmethod
     def query_all(sqla_helper: SqlaReflectHelper) -> List['DiscoveryInstance']:
@@ -316,7 +377,8 @@ class Jobs(Base):
 
     @staticmethod
     def create_table_if_not_exists(sqla_helper: SqlaReflectHelper):
-        Base.metadata.drop_all(sqla_helper.engine)
+        # 不 drop：drop_all 作用于共享的 Base.metadata，会把 instances 表一起删掉
+        # （每次 /-/reload 都丢健康学习状态）。jobs 由紧跟其后的 Jobs.clear_all() 清空。
         Base.metadata.create_all(sqla_helper.engine)
 
     @staticmethod

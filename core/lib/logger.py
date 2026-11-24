@@ -128,7 +128,7 @@ class DingTalkHandler(logging.Handler):
 
             else:
                 very_nb_print(
-                    f'此次离上次发送钉钉消息时间间隔不足 {self._time_interval} 秒，此次不发送这个钉钉内容： {record.msg}')
+                    f'此次离上次发送钉钉消息时间间隔不足 {self._time_interval} 秒，此次不发送这个钉钉内容： {record.getMessage()}')
 
     def __emit(self, record):
         try:
@@ -142,7 +142,7 @@ class DingTalkHandler(logging.Handler):
             resp = requests.post(self._ding_talk_url + self.sign(), json=json.loads(data), timeout=(5, 5))
             very_nb_print(f'钉钉返回 : {resp.text}')
         except Exception as e:
-            very_nb_print(f"发送消息给钉钉机器人失败,原始消息: {record.msg} {e}")
+            very_nb_print(f"发送消息给钉钉机器人失败,原始消息: {record.getMessage()} {e}")
 
     def __repr__(self):
         level = logging.getLevelName(self.level)

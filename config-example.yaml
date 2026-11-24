@@ -72,8 +72,10 @@ targets:
               timeout-sec: 10
               # 定时作业间隔
               interval: "@every 10s"
-              # 保留节点数，不设置默认保留1个，假设一个service有3个节点，min-hosts设置的是3，即使都不健康，也不会去注册中心下线实例
-              # 如果一个service有3个节点，min-hosts设置的是2，假设都不健康，则会下线1个实例，保留2个
+              # 健康实例数下限：当「健康实例数 <= min-hosts」时，不下线任何不健康节点。
+              # 不设置时默认 0 —— 只有全部实例都不健康（健康数 0）时才禁止下线，避免把服务摘空。
+              # 例：service 有 3 个节点、min-hosts=2：只要还有 2 个健康（含尚未检查的 unknown）就跳过；
+              #     3 个都不健康同样跳过。只有健康数 > min-hosts 时才会摘除不健康节点。
               min-hosts: 3
               # 健康检查http方法，默认是GET
               method: GET

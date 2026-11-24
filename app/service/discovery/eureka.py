@@ -66,7 +66,8 @@ class Eureka(Discovery):
                 continue
             # PUT /eureka/v2/apps/appID/instanceID/status?value=OUT_OF_SERVICE
             self.eureka_execute(method="PUT", params={"value": eureka_status.get(instance.enabled, "UP")},
-                                uri=f"/{registration.service_name}/{instance.ext.get('instanceId')}/status")
+                                uri=f"/{registration.service_name}/{instance.ext.get('instanceId')}/status",
+                                raise_on_error=True)
 
     def get_instances(self, instance_array: List, enabled_only: bool = True) -> List[Instance]:
 
@@ -85,13 +86,21 @@ class Eureka(Discovery):
                                       }))
         return instances
 
-    def eureka_execute(self, method="GET", uri=None, params=None, data=None) -> dict:
+    def eureka_execute(self, method="GET", uri=None, params=None, data=None,
+                       raise_on_error=False) -> dict:
         resp = httpx.request(method, f"{self._config.host}{self._config.prefix}apps{uri}",
                              params=params, data=data, timeout=10,
                              headers={"Content-Type": "application/json", "Accept": "application/json"})
 
         logger.info(
             f"请求 eureka 接口, method: {method}, url: {self._config.host}{self._config.prefix}{uri}, 请求参数: {params}, 请求数据: {data}, 响应结果: {resp.text}")
+        # 只读路径：服务不存在就当作空（原语义）；写路径（modify_registration）必须显式失败，
+        # 否则 eureka 下线静默失败后，_apply_healthcheck 会照样删跟踪行 → 下一轮又把节点
+        # 加回网关，形成 flap。
+        if raise_on_error and resp.status_code >= 400:
+            raise RuntimeError(
+                "eureka %s %s 返回 HTTP %s: %s"
+                % (method, uri, resp.status_code, (resp.text or "")[:300]))
         if resp.status_code == 404:
             return {}
         resp_txt = resp.text

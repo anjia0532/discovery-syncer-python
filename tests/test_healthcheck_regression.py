@@ -448,3 +448,254 @@ def test_apply_healthcheck_offlines_even_if_marked_long_ago(
 
     assert [i.ip for i in kept] == ["10.0.0.1", "10.0.0.2"]
     assert fake.modified == [("svc-w", ["10.0.0.3"])]
+
+
+# ---------------------------------------------------------------------------
+# 5. 3.0.5：作用域删除 / min-hosts 语义 / 唯一约束 / 写失败不删行
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def real_nacos(real_model):
+    """加载真实 nacos 客户端（不建连接池、不探测版本，测试里替换 _http）。"""
+    module = _load("app.service.discovery.nacos", "app/service/discovery/nacos.py",
+                   package="app.service.discovery")
+    try:
+        yield module
+    finally:
+        sys.modules.pop("app.service.discovery.nacos", None)
+
+
+def test_delete_by_instances_is_scoped_to_target_and_service(real_model, tmp_path):
+    """同一个 ip:port 出现在别的 target 下时，不能被连带删掉。"""
+    _engine, helper = _sqlite_helper(real_model, tmp_path)
+    a = real_model.DiscoveryInstance({"target_id": "t-a", "service": "svc-1"})
+    b = real_model.DiscoveryInstance({"target_id": "t-b", "service": "svc-1"})
+    a.save_or_update(_alive(real_model, "10.0.0.1"), helper)
+    b.save_or_update(_alive(real_model, "10.0.0.1"), helper)
+
+    a.delete_by_instances(["10.0.0.1:8080"], helper)
+
+    assert a.get_target_service_all_instance(0, helper) == []
+    assert [r.instance for r in b.get_target_service_all_instance(0, helper)] == ["10.0.0.1:8080"]
+
+
+def test_min_hosts_counts_healthy_instances(task_syncer, real_model, tmp_path, monkeypatch):
+    """min-hosts 保护的是「健康实例数」，不是 SQL OFFSET 跳过的前 N 行。"""
+    engine, helper = _sqlite_helper(real_model, tmp_path)
+    fake = _FakeDiscovery()
+    monkeypatch.setattr(task_syncer, "get_discovery_client", lambda _name: fake)
+    monkeypatch.setattr(task_syncer.db, "get_sqla_helper", lambda: (engine, helper))
+
+    target = {"id": "t-20", "discovery": "d-1", "config": {},
+              "healthcheck": {"type": "http", "uri": "/", "min-hosts": 3,
+                              "healthy": {"http_statuses": [200], "successes": 1},
+                              "unhealthy": {"http_statuses": [500], "failures": 3}}}
+    instances = _alive(real_model, "10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4")
+    tracker = real_model.DiscoveryInstance({"target_id": "t-20", "service": "svc-m"})
+    assert len(task_syncer._apply_healthcheck(target, "svc-m", instances)) == 4
+
+    # 1 个不健康 -> 健康数 3 <= min-hosts 3，不许下线（旧 OFFSET 实现会摘掉它）
+    _seed_and_mark_unhealthy(real_model, helper, "t-20", "svc-m", "10.0.0.4:8080")
+    assert len(task_syncer._apply_healthcheck(target, "svc-m", instances)) == 4
+    assert fake.modified == []
+    assert "10.0.0.4:8080" in [r.instance for r in
+                               tracker.get_target_service_all_instance(0, helper)]
+
+    # 再挂一个 -> 健康数 2 <= 3，仍然不许下线
+    _seed_and_mark_unhealthy(real_model, helper, "t-20", "svc-m", "10.0.0.3:8080")
+    assert len(task_syncer._apply_healthcheck(target, "svc-m", instances)) == 4
+    assert fake.modified == []
+
+    # 阈值降到 1 -> 健康数 2 > 1，允许把两个 unhealthy 摘掉
+    target["healthcheck"]["min-hosts"] = 1
+    kept = task_syncer._apply_healthcheck(target, "svc-m", instances)
+    assert [i.ip for i in kept] == ["10.0.0.1", "10.0.0.2"]
+    assert fake.modified[-1][1] == ["10.0.0.3", "10.0.0.4"]
+
+
+def test_unique_constraint_rejects_duplicate_row(real_model, tmp_path):
+    """并发重复插入由 (target_id, service, instance) 唯一约束兜住。"""
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+    _engine, helper = _sqlite_helper(real_model, tmp_path)
+    row = {"target_id": "t-u", "service": "svc-u", "instance": "1.1.1.1:80"}
+    with helper.session as ss:
+        ss.add(real_model.DiscoveryInstance({**row, "id": "id-a"}))
+        ss.commit()
+
+    with pytest.raises(SAIntegrityError):
+        with helper.session as ss:
+            ss.add(real_model.DiscoveryInstance({**row, "id": "id-b"}))
+            ss.commit()
+
+
+def test_modify_failure_keeps_tracking_row(task_syncer, real_model, tmp_path, monkeypatch, caplog):
+    """nacos 下线失败时不能删跟踪行，否则下一轮又会把它当健康节点加回网关（flap）。"""
+    class _FailingDiscovery(_FakeDiscovery):
+        def modify_registration(self, registration, instances):
+            raise RuntimeError("nacos 返回 HTTP 500")
+
+    engine, helper = _sqlite_helper(real_model, tmp_path)
+    fake = _FailingDiscovery()
+    monkeypatch.setattr(task_syncer, "get_discovery_client", lambda _name: fake)
+    monkeypatch.setattr(task_syncer.db, "get_sqla_helper", lambda: (engine, helper))
+
+    target = {"id": "t-30", "discovery": "d-1", "config": {},
+              "healthcheck": {"type": "http", "uri": "/", "min-hosts": 1,
+                              "healthy": {"http_statuses": [200], "successes": 1},
+                              "unhealthy": {"http_statuses": [500], "failures": 3}}}
+    instances = _alive(real_model, "10.0.0.1", "10.0.0.2", "10.0.0.3")
+    tracker = real_model.DiscoveryInstance({"target_id": "t-30", "service": "svc-f"})
+    assert len(task_syncer._apply_healthcheck(target, "svc-f", instances)) == 3
+    _seed_and_mark_unhealthy(real_model, helper, "t-30", "svc-f", "10.0.0.3:8080")
+
+    with caplog.at_level(logging.WARNING):
+        kept = task_syncer._apply_healthcheck(target, "svc-f", instances)
+
+    # 网关侧照常摘除（返回已过滤），但跟踪行必须保留，下一轮继续重试下线
+    assert [i.ip for i in kept] == ["10.0.0.1", "10.0.0.2"]
+    assert "10.0.0.3:8080" in [r.instance for r in
+                               tracker.get_target_service_all_instance(0, helper)]
+    assert any("健康检查下线实例失败" in r.getMessage() for r in caplog.records)
+
+
+def test_nacos_write_failures_raise(real_nacos, real_model):
+    """HTTP 4xx 与响应体 false 都必须显式失败，不能被当成下线成功。"""
+    client = real_nacos.Nacos.__new__(real_nacos.Nacos)
+    client._config = types.SimpleNamespace(host="http://nacos.example",
+                                           prefix="/nacos/v1/", declared_version="")
+    client._capability = types.SimpleNamespace(major=1, api_prefix="/nacos/v1/",
+                                               default_namespace="")
+    client._version_evidence = ""
+
+    class _Resp:
+        def __init__(self, status, text):
+            self.status_code = status
+            self.text = text
+
+    client._http = types.SimpleNamespace(
+        request=lambda *_a, **_kw: _Resp(400, "namespace not found"))
+    with pytest.raises(RuntimeError):
+        client.nacos_execute("PUT", "ns/instance", {"ip": "1.1.1.1"}, raise_on_error=True)
+
+    # 200 + false：nacos 用 false 表示更新失败
+    client._http = types.SimpleNamespace(request=lambda *_a, **_kw: _Resp(200, "false"))
+    instance = real_model.Instance(ip="1.1.1.1", port=80, enabled=False)
+    instance.change = True
+    with pytest.raises(RuntimeError):
+        client.modify_registration(real_model.Registration(service_name="svc", ext_data={}),
+                                   [instance])
+
+    # 200 + true：正常返回
+    client._http = types.SimpleNamespace(request=lambda *_a, **_kw: _Resp(200, "true"))
+    client.modify_registration(real_model.Registration(service_name="svc", ext_data={}),
+                               [instance])
+
+
+def test_save_or_update_tolerates_duplicate_insert(real_model, tmp_path, caplog):
+    """并发重复插入命中唯一约束时，save_or_update 不能抛（回滚忽略即可）。"""
+    _engine, helper = _sqlite_helper(real_model, tmp_path)
+    # 用固定主键在另一个 service 下先占位，模拟「另一线程已经写入同一行」
+    real_model.DiscoveryInstance(
+        {"id": "dup-id", "target_id": "t-d", "service": "svc-d1"}
+    ).save_or_update(_alive(real_model, "10.0.0.1"), helper)
+
+    collided = real_model.DiscoveryInstance(
+        {"id": "dup-id", "target_id": "t-d", "service": "svc-d2"})
+    with caplog.at_level(logging.INFO):
+        collided.save_or_update(_alive(real_model, "10.0.0.1"), helper)   # 不应抛
+
+    assert any("并发重复插入已忽略" in r.getMessage() for r in caplog.records)
+
+
+def test_stale_row_is_pruned_but_present_unhealthy_row_is_kept(
+        real_model, tmp_path, caplog):
+    """清理只针对「已从注册中心消失」的行；仍然存在但不健康的行必须保留。"""
+    M = real_model
+    _engine, helper = _sqlite_helper(M, tmp_path)
+    tracker = M.DiscoveryInstance({"target_id": "t-s", "service": "svc-s"})
+    tracker.save_or_update(_alive(M, "10.0.0.1", "10.0.0.2"), helper)
+
+    # 10.0.0.2 从注册中心消失（只剩 10.0.0.1）-> 只清理它
+    tracker.save_or_update(_alive(M, "10.0.0.1"), helper)
+    assert [r.instance for r in tracker.get_target_service_all_instance(0, helper)] == ["10.0.0.1:8080"]
+
+    # 再把 10.0.0.1 标记为 unhealthy 且「超过 10 分钟」：health_check 不能再删它
+    row = tracker.get_target_service_all_instance(0, helper)[0]
+    with helper.session as ss:
+        ss.execute(M.SQL_UPDATE_INSTANCES, {
+            "id": row.id, "successes": 0, "failures": 3, "timeouts": 0,
+            "status": "unhealthy", "last_time": datetime.now() - timedelta(minutes=15),
+        })
+        ss.commit()
+
+    unhealthy_row = tracker.get_target_service_all_instance(0, helper)[0]
+    with caplog.at_level(logging.WARNING):
+        unhealthy_row.health_check({"type": "http", "uri": "/"}, helper)
+
+    assert [r.instance for r in tracker.get_target_service_all_instance(0, helper)] == ["10.0.0.1:8080"]
+    assert any("跟踪行保留" in r.getMessage() for r in caplog.records)
+
+
+def test_eureka_write_failure_raises(real_model, monkeypatch):
+    """eureka 写失败（4xx/5xx）也要显式抛错，否则下线静默失败后照样删跟踪行。"""
+    eureka = _load("app.service.discovery.eureka", "app/service/discovery/eureka.py",
+                   package="app.service.discovery")
+    client = eureka.Eureka.__new__(eureka.Eureka)
+    client._config = types.SimpleNamespace(host="http://eureka.example", prefix="/eureka/v2/")
+
+    class _Resp:
+        status_code = 500
+        text = "boom"
+
+    monkeypatch.setattr(eureka.httpx, "request", lambda *_a, **_kw: _Resp())
+    instance = real_model.Instance(ip="1.1.1.1", port=80, enabled=False)
+    instance.change = True
+    instance.ext = {"instanceId": "i-1"}
+    with pytest.raises(RuntimeError):
+        client.modify_registration(
+            real_model.Registration(service_name="svc", ext_data={}), [instance])
+
+
+def test_nacos_v3_result_wrapper_failure_raises(real_nacos, real_model):
+    """nacos 3.x 返回 HTTP 200 + Result 包装体（code!=0）也算失败。"""
+    client = real_nacos.Nacos.__new__(real_nacos.Nacos)
+    client._config = types.SimpleNamespace(host="http://nacos.example",
+                                          prefix="/nacos/v3/admin/", declared_version="3")
+    client._capability = types.SimpleNamespace(major=3, api_prefix="/nacos/v3/admin/",
+                                               default_namespace="public")
+    client._version_evidence = "test"
+
+    class _Resp:
+        status_code = 200
+        text = '{"code":500,"message":"namespace not found","data":null}'
+
+    client._http = types.SimpleNamespace(request=lambda *_a, **_kw: _Resp())
+    instance = real_model.Instance(ip="1.1.1.1", port=80, enabled=False)
+    instance.change = True
+    with pytest.raises(RuntimeError):
+        client.modify_registration(real_model.Registration(service_name="svc", ext_data={}),
+                                   [instance])
+
+
+def test_reload_build_step_keeps_rows_and_ensures_unique_index(real_model, tmp_path):
+    """reload 的建表步骤不能抹掉 instances（旧实现 drop_all 会把健康状态一起删掉）。"""
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+    M = real_model
+    _engine, helper = _sqlite_helper(M, tmp_path)
+    tracker = M.DiscoveryInstance({"target_id": "t-c", "service": "svc-c"})
+    tracker.save_or_update(_alive(M, "10.0.0.1"), helper)
+
+    # 模拟 clear_client() 里的两步（Jobs 建表 + 清空），以及 instances 的建表
+    M.Jobs.create_table_if_not_exists(helper)
+    M.DiscoveryInstance.create_table_if_not_exists(helper)
+
+    assert [r.instance for r in tracker.get_target_service_all_instance(0, helper)] == ["10.0.0.1:8080"]
+
+    # 补上的唯一索引必须生效
+    with pytest.raises(SAIntegrityError):
+        with helper.session as ss:
+            ss.add(M.DiscoveryInstance({"id": "dup-row", "target_id": "t-c",
+                                        "service": "svc-c", "instance": "10.0.0.1:8080"}))
+            ss.commit()

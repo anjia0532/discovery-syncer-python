@@ -67,7 +67,9 @@ def discovery(discovery_name: Annotated[str, Path(title="discovery_name", descri
                 raise Exception(
                     f"最少存活实例数{alive_num}不满足，总实例数(含之前已下线数量){len(discovery_instances)}，要下线实例数{len(down_hosts)}，剩余在线实例数{len(alive_hosts)}")
         discovery_client.modify_registration(registration, instances=instances)
-        DiscoveryInstance({}).delete_by_instances(
+        # 只按 service 限定作用域（这里拿不到 target_id）：否则别的 target/service 下同一
+        # ip:port 的跟踪行会被连带删掉。modify_registration 失败会抛异常，就不会走到这里。
+        DiscoveryInstance({"service": registration.service_name}).delete_by_instances(
             [f"{instance.ip}:{instance.port}" for instance in instances if not instance.enabled],
             db.get_sqla_helper()[1])
     except Exception as e:

@@ -224,17 +224,32 @@ def _apply_healthcheck(target: dict, service_name: str, instances: List[Any]) ->
         return instances
     sqla_helper = db.get_sqla_helper()[1]
     discovery_client = get_discovery_client(target.get("discovery"))
+    scoped = DiscoveryInstance({"target_id": target.get('id'), "service": service_name})
     try:
+        # min-hosts 语义 = 「健康实例数」下限（旧实现是 SQL OFFSET，保护的是登记总数）。
+        # 配置层 Targets.healthcheck 是裸 dict（HealthCheck 模型并未挂到 Targets 上，形同虚设），
+        # 所以这里必须自己容错：写错时回落 0，不能让一次配置笔误把整个 target 的同步搞挂。
+        try:
+            min_hosts = int(healthcheck.get("min-hosts") or 0)
+        except (TypeError, ValueError):
+            logger.warning("min-hosts 配置非法(%r)，按 0 处理, 作业: %s, service: %s",
+                           healthcheck.get("min-hosts"), target.get('id'), service_name)
+            min_hosts = 0
         # 必须先读 unhealthy、再 save_or_update：后者会把「unhealthy 且 last_time 超过 60s」
         # 的行重置成 unknown 并清零计数（给实例第二次机会）。若先写库，待下线的行会被提前
         # 清掉 —— 只要同步间隔 > 60s（例如 fetch-interval 调成 1m/5m），自动下线就永远不触发。
-        tracked = DiscoveryInstance(
-            {"target_id": target.get('id'), "service": service_name}).get_target_service_all_instance(
-            healthcheck.get("min-hosts", 1), sqla_helper)
-        DiscoveryInstance({"target_id": target.get('id'), "service": service_name}).save_or_update(
-            instances, sqla_helper)
+        tracked = scoped.get_target_service_all_instance(0, sqla_helper)
+        scoped.save_or_update(instances, sqla_helper)
         unhealthy = [d for d in tracked if d.status == "unhealthy"]
         if not unhealthy:
+            return instances
+        # 健康数只统计「当前快照里仍然存在」的实例：跟踪表里可能还有已退出、尚未被清理的行，
+        # 把它们算成健康会抬高门禁、让本该保留的节点被摘掉。
+        alive_keys = {f"{d.ip}:{d.port}" for d in instances}
+        healthy_count = len({r.instance for r in tracked if r.status != "unhealthy"} & alive_keys)
+        if healthy_count <= min_hosts:
+            logger.info("健康实例 %s 个 <= min-hosts %s，跳过下线, 作业: %s, service: %s",
+                        healthy_count, min_hosts, target.get('id'), service_name)
             return instances
         unhealthy_keys = [b.instance for b in unhealthy]
         down_instances = [d for d in instances if f"{d.ip}:{d.port}" in unhealthy_keys]
@@ -244,8 +259,10 @@ def _apply_healthcheck(target: dict, service_name: str, instances: List[Any]) ->
                 item.change = True
                 item.enabled = False
             registration = Registration(service_name=service_name, ext_data=target.get("config", {}))
+            # 失败会抛异常（nacos 返回 4xx / false）→ 下面的删行不会执行，下一轮继续重试，
+            # 避免「下线没生效但跟踪行被删 → 下一轮又当健康节点加回网关」的来回 flap。
             discovery_client.modify_registration(registration, down_instances)
-        DiscoveryInstance({}).delete_by_instances(unhealthy_keys, sqla_helper)
+        scoped.delete_by_instances(unhealthy_keys, sqla_helper)
     except Exception as exc:  # noqa: BLE001
         # 带上作业/服务上下文并输出完整堆栈；此前只传 exc_info=异常对象且占位符未渲染，
         # 线上只能看到「健康检查下线实例失败, %s , %s」，无法定位。
