@@ -11,10 +11,13 @@ ENV PROJECT_ENV=prod
 WORKDIR /opt/discovery-syncer/
 COPY requirements.txt /opt/discovery-syncer/
 
-# 刻意不替换 apt 源：换成国内镜像站在 GitHub Actions runner（境外 IP）上
-# 会导致 apt-get update 失败（exit 100）。如需国内构建可用构建参数换源：
+# 刻意不替换 apt / pypi 源：国内镜像站在 GitHub Actions runner（境外 IP）上反而更慢，
+# 且把 deb.debian.org 换成国内镜像会让 apt-get update 失败（exit 100）。
+# 所以默认全走官方源（含官方 PyPI）；国内本地构建需要加速时显式覆盖：
 #   --build-arg APT_MIRROR=mirrors.ustc.edu.cn
+#   --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG APT_MIRROR=""
+ARG PIP_INDEX_URL=https://pypi.org/simple
 RUN if [ -n "$APT_MIRROR" ]; then \
         if [ -f /etc/apt/sources.list ]; then \
             sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
@@ -23,7 +26,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
             sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
         fi; \
     fi; \
-    pip install -i https://mirrors.aliyun.com/pypi/simple --no-cache-dir --upgrade -r /opt/discovery-syncer/requirements.txt
+    pip install -i "$PIP_INDEX_URL" --no-cache-dir --upgrade -r /opt/discovery-syncer/requirements.txt
 
 
 ADD . /opt/discovery-syncer/

@@ -73,12 +73,14 @@ else
   docker buildx use "$BUILDER"
 fi
 
-# 可选构建参数（国内网络构建时使用）：
-#   APT_MIRROR=mirrors.ustc.edu.cn      替换 Debian apt 源
+# 可选构建参数（默认全部官方源；GitHub Actions 上不要换国内镜像，反而更慢）：
+#   APT_MIRROR=mirrors.ustc.edu.cn      替换 Debian apt 源（仅国内本地构建用）
+#   PIP_INDEX_URL=...                  替换 PyPI 源（默认 https://pypi.org/simple）
 #   KUBECTL_VERSION=v1.31.4             指定 kubectl 版本；置空则跳过安装
-#   KUBECTL_BASE=...                    kubectl 下载源
+#   KUBECTL_BASE=...                    kubectl 下载源（默认 https://dl.k8s.io/release）
 EXTRA_BUILD_ARGS=()
 [[ -n "${APT_MIRROR:-}" ]] && EXTRA_BUILD_ARGS+=(--build-arg "APT_MIRROR=${APT_MIRROR}")
+[[ -n "${PIP_INDEX_URL:-}" ]] && EXTRA_BUILD_ARGS+=(--build-arg "PIP_INDEX_URL=${PIP_INDEX_URL}")
 [[ -n "${KUBECTL_VERSION:-}" ]] && EXTRA_BUILD_ARGS+=(--build-arg "KUBECTL_VERSION=${KUBECTL_VERSION}")
 [[ -n "${KUBECTL_BASE:-}" ]] && EXTRA_BUILD_ARGS+=(--build-arg "KUBECTL_BASE=${KUBECTL_BASE}")
 

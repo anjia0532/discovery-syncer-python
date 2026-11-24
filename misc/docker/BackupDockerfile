@@ -11,13 +11,18 @@ ENV TZ=Asia/Shanghai
 # kubectl 版本由构建参数指定（锁定版本，避免依赖 stable.txt 在线查询）。
 # 置空（--build-arg KUBECTL_VERSION=）则跳过安装：直连模式不需要 kubectl。
 ARG KUBECTL_VERSION=v1.31.4
-# kubectl 下载源。官方 dl.k8s.io 在部分网络不可达，可换镜像：
+# kubectl 下载源。默认官方 dl.k8s.io（GitHub runner 在境外，走国内镜像更慢）；
+# 部分国内网络不可达时才换镜像：
 #   --build-arg KUBECTL_BASE=https://mirrors.aliyun.com/kubernetes-release/release
 ARG KUBECTL_BASE=https://dl.k8s.io/release
 
+# PyPI 源同理：默认官方源。国内镜像站在 runner 上反而更慢，只有本地国内构建才覆盖：
+#   --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
 WORKDIR /opt/discovery-syncer/
 
-RUN pip install -i https://mirrors.aliyun.com/pypi/simple --no-cache-dir --upgrade GitPython httpx
+RUN pip install -i "$PIP_INDEX_URL" --no-cache-dir --upgrade GitPython httpx
 
 # 安装 git / curl / ca-certificates。
 # 刻意**不默认替换 apt 源**：原实现把 deb.debian.org 换成 mirrors.ustc.edu.cn，
