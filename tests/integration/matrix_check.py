@@ -140,19 +140,20 @@ def _kong_contract(base: str, major: int) -> Dict[str, Any]:
     """
     name = "ds-matrix-test"
     target = "127.0.0.1:18080"
-    httpx.put(f"{base}/upstreams/{name}", json={"name": name}, timeout=5)
+    t = CONTRACT_TIMEOUT
+    httpx.put(f"{base}/upstreams/{name}", json={"name": name}, timeout=t)
     # 清理上一次运行残留的 target，否则 POST 会因已存在返回 409，干扰首轮判定
-    httpx.delete(f"{base}/upstreams/{name}/targets/{target}", timeout=5)
+    httpx.delete(f"{base}/upstreams/{name}/targets/{target}", timeout=t)
     body = {"target": target, "weight": 100}
 
-    created = httpx.post(f"{base}/upstreams/{name}/targets", json=body, timeout=5)
-    second_post = httpx.post(f"{base}/upstreams/{name}/targets", json=body, timeout=5)
+    created = httpx.post(f"{base}/upstreams/{name}/targets", json=body, timeout=t)
+    second_post = httpx.post(f"{base}/upstreams/{name}/targets", json=body, timeout=t)
     updated = httpx.put(f"{base}/upstreams/{name}/targets/{target}",
-                        json={"target": target, "weight": 200}, timeout=5)
+                        json={"target": target, "weight": 200}, timeout=t)
     missing = httpx.put(f"{base}/upstreams/{name}/targets/127.0.0.9:9999",
-                        json={"target": "127.0.0.9:9999", "weight": 1}, timeout=5)
+                        json={"target": "127.0.0.9:9999", "weight": 1}, timeout=t)
 
-    listing = httpx.get(f"{base}/upstreams/{name}/targets", timeout=5).json()
+    listing = httpx.get(f"{base}/upstreams/{name}/targets", timeout=t).json()
     targets = [t.get("target") for t in listing.get("data", [])]
     if major >= 3:
         ok = (created.status_code < 400 and second_post.status_code == 409
@@ -185,21 +186,63 @@ def probe_with_retry(attempts: int = 3, delay: float = 8.0) -> Dict[str, Any]:
     return report
 
 
+CONTRACT_TIMEOUT = 20.0   # 5s 对 Kong 2.x 冷启动首次 admin 写太紧
+CONTRACT_ATTEMPTS = 3
+
+
+def warmup(base: str, path: str = "/upstreams", timeout: float = 120.0) -> None:
+    """等 admin API 真正可用（端口就绪 != 服务可写）。
+
+    Kong 2.8 冷启动时第一次写 upstream/target 会阻塞在 DB cache 的回调锁上
+    （容器日志: ``could not acquire callback lock: timeout``），客户端等几秒就超时，
+    表现为「契约校验随机失败」。先用 GET 探到非 5xx 再进入契约阶段。
+    """
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        try:
+            resp = httpx.get(f"{base}{path}", timeout=5)
+            if resp.status_code < 500:
+                return
+            last = f"HTTP {resp.status_code}"
+        except Exception as exc:  # noqa: BLE001
+            last = str(exc)
+        time.sleep(2)
+    raise RuntimeError(f"admin API 预热超时（{timeout}s）: {last}")
+
+
+def _with_retry(label: str, func: Any, *args: Any,
+                attempts: int = CONTRACT_ATTEMPTS, delay: float = 5.0) -> Dict[str, Any]:
+    """契约校验带重试：冷启动抖动不应该把整条发版流水线判死。"""
+    last: Dict[str, Any] = {"ok": False, "error": "not executed"}
+    for index in range(attempts):
+        try:
+            last = func(*args)
+            if last.get("ok"):
+                return last
+        except Exception as exc:  # noqa: BLE001
+            last = {"ok": False, "error": str(exc)}
+        if index < attempts - 1:
+            print(f"contract retry {index + 1}/{attempts - 1} for {label}: {last}", file=sys.stderr)
+            time.sleep(delay)
+    return last
+
+
 def run(mode: str) -> int:
     if mode == "wait":
         return 0 if wait_ready() else 1
     report = probe_with_retry()
     if mode == "test":
         for label, base, major, _port in MATRIX["apisix"]:
-            try:
-                report[label]["contract"] = _apisix_contract(base, major)
-            except Exception as exc:  # noqa: BLE001
-                report[label]["contract"] = {"ok": False, "error": str(exc)}
+            report[label]["contract"] = _with_retry(label, _apisix_contract, base, major)
         for label, base, major, _port in MATRIX["kong"]:
+            # 端口通 != admin 可写：Kong 2.8 冷启动首次写会卡在 DB cache 回调锁上
+            # （容器日志 `could not acquire callback lock: timeout`），先预热再校验。
             try:
-                report[label]["contract"] = _kong_contract(base, major)
+                warmup(base)
             except Exception as exc:  # noqa: BLE001
-                report[label]["contract"] = {"ok": False, "error": str(exc)}
+                print(f"{label} 预热失败: {exc}", file=sys.stderr)
+            report[label]["contract"] = _with_retry(label, _kong_contract, base, major)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     failures = [k for k, v in report.items() if not v.get("ok")
                 or (isinstance(v.get("contract"), dict) and not v["contract"].get("ok"))]
